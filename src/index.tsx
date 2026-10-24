@@ -2,6 +2,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
+import '@fontsource-variable/outfit';
+import '@fontsource-variable/inter';
 
 // Purge any stale custom_session from obsolete runs
 try {
@@ -16,22 +18,6 @@ try {
   localStorage.removeItem('custom_session');
 }
 
-// Unregister obsolete service workers to prevent cached chunk conflicts
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const r of registrations) {
-      r.unregister();
-    }
-  });
-}
-if ('caches' in window) {
-  caches.keys().then((keys) => {
-    for (const k of keys) {
-      caches.delete(k);
-    }
-  });
-}
-
 const rootEl = document.getElementById('root');
 if (rootEl) {
   createRoot(rootEl).render(
@@ -39,4 +25,15 @@ if (rootEl) {
       <App />
     </StrictMode>,
   );
+}
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const buildId = document.querySelector<HTMLMetaElement>('meta[name="app-build-id"]')?.content;
+    const workerUrl = new URL('/sw.js', window.location.origin);
+    if (buildId) workerUrl.searchParams.set('v', buildId);
+    void navigator.serviceWorker.register(workerUrl.toString(), { updateViaCache: 'none' }).catch(() => {
+      console.error('Unable to register the application service worker.');
+    });
+  });
 }

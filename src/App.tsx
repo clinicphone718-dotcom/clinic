@@ -443,6 +443,10 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(
+    () => window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as any).standalone),
+  );
+  const [updateAvailable, setUpdateAvailable] = useState(false);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -450,15 +454,30 @@ export default function App() {
       setDeferredPrompt(e);
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    const handleInstalled = () => {
+      setDeferredPrompt(null);
+      setIsAppInstalled(true);
+    };
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'APP_UPDATED') setUpdateAvailable(true);
+    };
+    const standaloneQuery = window.matchMedia('(display-mode: standalone)');
+    const handleDisplayModeChange = (event: MediaQueryListEvent) => setIsAppInstalled(event.matches);
+    window.addEventListener('appinstalled', handleInstalled);
+    navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+    standaloneQuery.addEventListener('change', handleDisplayModeChange);
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleInstalled);
+      navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+      standaloneQuery.removeEventListener('change', handleDisplayModeChange);
     };
   }, []);
 
   const handleInstallApp = async () => {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
+    await deferredPrompt.userChoice;
     setDeferredPrompt(null);
   };
 
@@ -841,12 +860,24 @@ export default function App() {
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/startup" element={<Navigate to="/settings#startup-settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
-                <Route path="/settings" element={<Settings userProfile={userProfile} />} />
+                <Route path="/settings" element={<Settings
+                  userProfile={userProfile}
+                  deferredPrompt={deferredPrompt}
+                  handleInstallApp={() => void handleInstallApp()}
+                  isIOS={/iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream}
+                  isStandalone={isAppInstalled}
+                />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
           </main>
 
+          {updateAvailable && (
+            <div role="status" className="fixed bottom-4 left-1/2 z-[120] flex w-[min(94vw,34rem)] -translate-x-1/2 items-center justify-between gap-3 rounded-2xl border border-indigo-200 bg-white p-3 shadow-xl">
+              <p className="text-sm font-semibold text-slate-800">Nouvelle version disponible, actualiser</p>
+              <button type="button" onClick={() => window.location.reload()} className="min-h-10 shrink-0 rounded-xl bg-indigo-600 px-4 text-xs font-bold text-white hover:bg-indigo-700">Actualiser</button>
+            </div>
+          )}
           {!isOnline && <OfflineBlocker />}
         </div>
         </StartupProvider>

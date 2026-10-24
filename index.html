@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="%VITE_APP_PRIMARY_COLOR%" />
+    <meta name="app-build-id" content="%VITE_BUILD_ID%" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="%VITE_APP_SHORT_NAME%" />
@@ -19,39 +20,9 @@
     <meta property="twitter:title" content="%VITE_APP_NAME%" />
     <meta property="twitter:description" content="%VITE_APP_NAME% - %VITE_APP_TAGLINE%" />
     <meta property="twitter:image" content="%VITE_APP_LOGO%" />
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
-    <script>
-      try {
-        localStorage.removeItem('custom_session');
-      } catch (e) {}
-
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(regs) {
-          if (regs.length > 0) {
-            regs.forEach(function(r) { r.unregister(); });
-          }
-        });
-      }
-      if ('caches' in window) {
-        caches.keys().then(function(keys) {
-          keys.forEach(function(k) { caches.delete(k); });
-        });
-      }
-
-      window.addEventListener('error', function(e) {
-        if (e && e.message && (e.message.indexOf('useState') !== -1 || e.message.indexOf('Invalid hook call') !== -1)) {
-          if (!sessionStorage.getItem('react_auto_fix')) {
-            sessionStorage.setItem('react_auto_fix', '1');
-            window.location.reload();
-          }
-        }
-      });
-    </script>
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="/manifest.webmanifest" />
   </head>
   <body style="--brand-primary: %VITE_APP_PRIMARY_COLOR%">
     <div id="root"></div>

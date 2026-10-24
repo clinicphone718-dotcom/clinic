@@ -18,22 +18,6 @@ try {
   localStorage.removeItem('custom_session');
 }
 
-// Unregister obsolete service workers to prevent cached chunk conflicts
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const r of registrations) {
-      r.unregister();
-    }
-  });
-}
-if ('caches' in window) {
-  caches.keys().then((keys) => {
-    for (const k of keys) {
-      caches.delete(k);
-    }
-  });
-}
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {MISSING_FIREBASE_CONFIG.length > 0 ? (

@@ -17,6 +17,10 @@ import { isDirectAudioUrl } from '../lib/startup';
 
 interface SettingsProps {
   userProfile: UserProfile | null;
+  deferredPrompt?: any;
+  handleInstallApp?: () => void;
+  isIOS?: boolean;
+  isStandalone?: boolean;
 }
 
 // ── Carte "Mon code de sécurité" : chaque utilisateur peut changer son propre code à 4 chiffres.
@@ -174,6 +178,29 @@ function SecurityCodeCard({ userProfile }: { userProfile: UserProfile | null }) 
   );
 }
 
+function InstallAppCard({
+  deferredPrompt,
+  handleInstallApp,
+  isIOS,
+  isStandalone,
+}: Pick<SettingsProps, 'deferredPrompt' | 'handleInstallApp' | 'isIOS' | 'isStandalone'>) {
+  if (isStandalone || (!deferredPrompt && !isIOS)) return null;
+  return (
+    <section className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs">
+      <h2 className="text-sm font-bold text-slate-800">Installer l'application</h2>
+      {deferredPrompt ? (
+        <button type="button" onClick={handleInstallApp} className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-indigo-700">
+          Installer l'application
+        </button>
+      ) : (
+        <p className="mt-2 text-xs leading-relaxed text-slate-600">
+          Sur iPhone ou iPad : appuyez sur Partager, puis sur Sur l’écran d’accueil.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function AccountPasswordCard() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -263,7 +290,13 @@ function AccountPasswordCard() {
   );
 }
 
-export default function Settings({ userProfile }: SettingsProps) {
+export default function Settings({
+  userProfile,
+  deferredPrompt,
+  handleInstallApp,
+  isIOS,
+  isStandalone,
+}: SettingsProps) {
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState<string | null>(null);
@@ -385,6 +418,7 @@ export default function Settings({ userProfile }: SettingsProps) {
           </p>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          <InstallAppCard deferredPrompt={deferredPrompt} handleInstallApp={handleInstallApp} isIOS={isIOS} isStandalone={isStandalone} />
           <AccountPasswordCard />
           <SecurityCodeCard userProfile={userProfile} />
         </div>
@@ -905,6 +939,7 @@ export default function Settings({ userProfile }: SettingsProps) {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          <InstallAppCard deferredPrompt={deferredPrompt} handleInstallApp={handleInstallApp} isIOS={isIOS} isStandalone={isStandalone} />
           {/* Card 0: Mon code de sécurité (visible par tous les utilisateurs) */}
           <AccountPasswordCard />
           <SecurityCodeCard userProfile={userProfile} />

@@ -93,6 +93,7 @@ function salesBuildPlugin(environment: Record<string, string>): Plugin {
     primaryColor: environment.VITE_APP_PRIMARY_COLOR?.trim() || '#4f46e5',
     logo: environment.VITE_APP_LOGO?.trim() || '/icon.svg',
   };
+  const buildId = Date.now().toString(36);
 
   return {
     name: 'sales-build-config',
@@ -105,6 +106,7 @@ function salesBuildPlugin(environment: Record<string, string>): Plugin {
           '%VITE_APP_TAGLINE%': brand.tagline,
           '%VITE_APP_PRIMARY_COLOR%': brand.primaryColor,
           '%VITE_APP_LOGO%': brand.logo,
+          '%VITE_BUILD_ID%': buildId,
         };
         return Object.entries(replacements).reduce(
           (result, [placeholder, value]) => result.replaceAll(placeholder, value),
@@ -113,26 +115,28 @@ function salesBuildPlugin(environment: Record<string, string>): Plugin {
       },
     },
     generateBundle(_options, bundle) {
-      const manifest = bundle['manifest.json'];
-      if (manifest?.type !== 'asset') return;
-      const source = typeof manifest.source === 'string'
-        ? manifest.source
-        : new TextDecoder().decode(manifest.source);
-      const manifestData = JSON.parse(source) as Record<string, unknown>;
-      manifestData.name = brand.name;
-      manifestData.short_name = brand.shortName;
-      manifestData.description = `${brand.name} — ${brand.tagline}`;
-      manifestData.theme_color = brand.primaryColor;
-      manifestData.background_color = brand.primaryColor;
-      manifestData.icons = [
-        { src: brand.logo, sizes: 'any', type: brand.logo.endsWith('.svg') ? 'image/svg+xml' : 'image/png', purpose: 'any' },
-        ...(brand.logo === '/icon.svg' ? [
-          { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ] : []),
-      ];
-      manifest.source = JSON.stringify(manifestData, null, 2);
+      this.emitFile({
+        type: 'asset',
+        fileName: 'manifest.webmanifest',
+        source: JSON.stringify({
+          name: brand.name,
+          short_name: brand.shortName,
+          description: `${brand.name} — ${brand.tagline}`,
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          orientation: 'any',
+          lang: 'fr',
+          theme_color: brand.primaryColor,
+          background_color: brand.primaryColor,
+          categories: ['business', 'productivity'],
+          icons: [
+            { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        }, null, 2),
+      });
     },
   };
 }
