@@ -64,6 +64,7 @@ Pour Render, renseignez les variables dans **Environment**. En local, copiez `.e
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | oui | Sender ID indiqué par Firebase |
 | `VITE_FIRESTORE_DATABASE_ID` | non | `(default)` ou ID de la base nommée |
 | `VITE_ALLOW_SELF_SIGNUP` | non | `false` par défaut ; ne l’activer que si souhaité |
+| `VITE_API_URL` | non | URL absolue de l’API, avec ou sans suffixe `/api`; vide pour même origine ou proxy Netlify |
 | `VITE_APP_NAME` | non | Nom commercial, défaut `Phone Clinic` |
 | `VITE_APP_SHORT_NAME` | non | Nom court de marque |
 | `VITE_APP_TAGLINE` | non | Défaut `Caisse & Réparation` |

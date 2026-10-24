@@ -1,6 +1,9 @@
 import { auth } from '../firebase';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const API_BASE_PATH = API_BASE_URL.endsWith('/api')
+  ? API_BASE_URL
+  : `${API_BASE_URL}/api`;
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status?: number) {
@@ -19,7 +22,7 @@ export async function apiFetch(
   let response: Response;
   try {
     const token = await currentUser.getIdToken();
-    response = await fetch(`${API_BASE_URL}/api${path.startsWith('/') ? path : `/${path}`}`, {
+    response = await fetch(`${API_BASE_PATH}${path.startsWith('/') ? path : `/${path}`}`, {
       ...options,
       headers: {
         ...options.headers,
