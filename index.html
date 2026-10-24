@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="%VITE_APP_PRIMARY_COLOR%" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="%VITE_APP_SHORT_NAME%" />
+    <title>%VITE_APP_NAME%</title>
+    <meta name="description" content="%VITE_APP_NAME% - %VITE_APP_TAGLINE%" />
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="%VITE_APP_NAME%" />
+    <meta property="og:description" content="%VITE_APP_NAME% - %VITE_APP_TAGLINE%" />
+    <meta property="og:image" content="%VITE_APP_LOGO%" />
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary" />
+    <meta property="twitter:title" content="%VITE_APP_NAME%" />
+    <meta property="twitter:description" content="%VITE_APP_NAME% - %VITE_APP_TAGLINE%" />
+    <meta property="twitter:image" content="%VITE_APP_LOGO%" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      try {
+        localStorage.removeItem('custom_session');
+      } catch (e) {}
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          if (regs.length > 0) {
+            regs.forEach(function(r) { r.unregister(); });
+          }
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(keys) {
+          keys.forEach(function(k) { caches.delete(k); });
+        });
+      }
+
+      window.addEventListener('error', function(e) {
+        if (e && e.message && (e.message.indexOf('useState') !== -1 || e.message.indexOf('Invalid hook call') !== -1)) {
+          if (!sessionStorage.getItem('react_auto_fix')) {
+            sessionStorage.setItem('react_auto_fix', '1');
+            window.location.reload();
+          }
+        }
+      });
+    </script>
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

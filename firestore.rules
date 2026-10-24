@@ -1,0 +1,714 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return false;
+    }
+
+    // Vrai si `uid` est un compte admin dont le magasin lui appartient bien à lui-même
+    // (ownerId == uid, ou absent = équivalent). Sert à isoler strictement chaque magasin.
+    function isStoreAdmin(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.role == 'admin' &&
+        get(/databases/$(database)/documents/users/$(uid)).data.get('ownerId', uid) == uid;
+    }
+
+    function hasAccess(ownerId) {
+      return isAuthenticated() && (
+        isAdmin() ||
+        request.auth.uid == ownerId ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('ownerId', '') == ownerId)
+      );
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function allowedMenuIds() {
+      return userData().get('allowedMenus',
+        ['dashboard', 'pos', 'products', 'clients', 'sales', 'invoices', 'notes']);
+    }
+    function isTechnicianPreset() {
+      return userExists() &&
+        userData().get('role', '') == 'user' &&
+        allowedMenuIds().hasOnly(['reparation']);
+    }
+    function isTechnicianUser() {
+      return userExists() &&
+        userData().get('role', '') == 'user' &&
+        hasMenu('reparation') &&
+        hasMenu('pieces') &&
+        hasMenu('products') &&
+        hasMenu('clients') &&
+        !hasMenu('pos');
+    }
+    function perm(menu, flag) {
+      return isAdmin() || isAdminRole() || (userExists() && (
+        menu == 'startup'
+          ? (
+            'permissions' in userData() && 'startup' in userData().get('permissions', {})
+              ? userData().get('permissions', {}).get('startup', {}).get(flag, false) == true
+              : flag == 'showScreen'
+          )
+          : hasMenu(menu) && (
+            'permissions' in userData()
+              ? userData().get('permissions', {}).get(menu, {}).get(flag, false) == true
+              : (isTechnicianUser() || isTechnicianPreset()) &&
+                (menu in ['pieces', 'products', 'clients'] &&
+                  flag in ['addEdit', 'adjustStock', 'delete'])
+          )
+      ));
+    }
+    function isAdminRole() {
+      return isAuthenticated() && userExists() && userData().get('role', '') == 'admin';
+    }
+    function isStoreOwnerAdmin(ownerId) {
+      return isAuthenticated() &&
+        request.auth.uid == ownerId &&
+        userExists() &&
+        userData().get('role', '') == 'admin' &&
+        userData().get('ownerId', request.auth.uid) == request.auth.uid;
+    }
+    function hasMenu(menu) {
+      return isAuthenticated() && (
+        isAdmin() ||
+        (userExists() && (
+          userData().get('role', '') == 'admin' ||
+          (menu in allowedMenuIds() ||
+           (menu == 'pieces' && isTechnicianPreset()))
+        ))
+      );
+    }
+    function hasAnyMenu(menus) {
+      return isAuthenticated() && (
+        isAdmin() ||
+        (userExists() && (
+          userData().get('role', '') == 'admin' ||
+          allowedMenuIds().hasAny(menus) ||
+          (menus.hasAny(['pieces']) && isTechnicianPreset())
+        ))
+      );
+    }
+    function onlyChangedFields(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+    function validStock(data) {
+      return !('stock' in data) ||
+        (data.stock is int && data.stock >= 0);
+    }
+    function validStockOnlyUpdate() {
+      return onlyChangedFields(['stock']) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0;
+    }
+    function validRepairStockMovement(productId, movementId) {
+      let movementPath = /databases/$(database)/documents/stock_movements/$(movementId);
+      return
+        !exists(movementPath) &&
+        existsAfter(movementPath) &&
+        getAfter(movementPath).data.productId == productId &&
+        getAfter(movementPath).data.inventoryCollection == 'products' &&
+        getAfter(movementPath).data.ownerId == resource.data.get('ownerId', request.auth.uid) &&
+        getAfter(movementPath).data.userId == request.auth.uid &&
+        getAfter(movementPath).data.type in ['repair_part_adjustment', 'repair_delete_return'] &&
+        getAfter(movementPath).data.repairId is string &&
+        getAfter(movementPath).data.delta == request.resource.data.stock - resource.data.get('stock', 0);
+    }
+    function validRepairStockOnlyUpdate(productId) {
+      let movementId = request.resource.data.get('lastStockMovementId', '');
+      return onlyChangedFields(['stock', 'lastStockMovementId']) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0 &&
+        movementId is string &&
+        movementId.size() > 0 &&
+        validRepairStockMovement(productId, movementId);
+    }
+    function validTechnicianProductStockUpdate(productId) {
+      let movementId = request.resource.data.get('lastStockMovementId', '');
+      let movementPath = /databases/$(database)/documents/stock_movements/$(movementId);
+      return onlyChangedFields(['stock', 'stockVersion', 'lastStockMovementId', 'ownerId', 'userId']) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0 &&
+        request.resource.data.get('stockVersion', -1) is int &&
+        movementId is string &&
+        !exists(movementPath) &&
+        existsAfter(movementPath) &&
+        getAfter(movementPath).data.productId == productId &&
+        getAfter(movementPath).data.inventoryCollection == 'products' &&
+        getAfter(movementPath).data.ownerId == resource.data.get('ownerId', request.auth.uid) &&
+        getAfter(movementPath).data.userId == request.auth.uid &&
+        getAfter(movementPath).data.delta == request.resource.data.stock - resource.data.get('stock', 0);
+    }
+    function validTechnicianProductUpdate(productId) {
+      return request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        !('buyPrice' in request.resource.data) &&
+        validStock(request.resource.data) &&
+        onlyChangedFields([
+          'name', 'category', 'sellPrice', 'barcode', 'reference', 'stock',
+          'lowStockAlert', 'expirationDate', 'active', 'inventoryType',
+          'stockVersion', 'lastStockMovementId', 'ownerId', 'userId'
+        ]) &&
+        (
+          request.resource.data.get('stock', 0) == resource.data.get('stock', 0) ||
+          validTechnicianProductStockUpdate(productId)
+        );
+    }
+    function validProductMetadataUpdate(productId) {
+      return request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        !('buyPrice' in request.resource.data) &&
+        onlyChangedFields([
+          'name', 'category', 'sellPrice', 'barcode', 'reference',
+          'lowStockAlert', 'expirationDate', 'active', 'inventoryType'
+        ]) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellPrice']) ||
+          perm('products', 'editSellPrice'));
+    }
+    function validRepairPartStockOnlyUpdate(partId) {
+      let movementId = request.resource.data.get('lastStockMovementId', '');
+      let movementPath = /databases/$(database)/documents/stock_movements/$(movementId);
+      return onlyChangedFields(['stock', 'stockVersion', 'lastStockMovementId', 'updatedAt']) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0 &&
+        movementId is string &&
+        !exists(movementPath) &&
+        existsAfter(movementPath) &&
+        getAfter(movementPath).data.productId == partId &&
+        getAfter(movementPath).data.inventoryCollection == 'parts' &&
+        getAfter(movementPath).data.ownerId == resource.data.get('ownerId', request.auth.uid) &&
+        getAfter(movementPath).data.userId == request.auth.uid &&
+        getAfter(movementPath).data.delta == request.resource.data.stock - resource.data.get('stock', 0);
+    }
+    function validStockMovement(movementId) {
+      let data = request.resource.data;
+      let inventoryPath = /databases/$(database)/documents/$(data.inventoryCollection)/$(data.productId);
+      let expectedId = data.type == 'part_initial_stock'
+        ? 'part_' + data.productId + '_v1'
+        : data.type in ['part_restock', 'part_manual_adjustment']
+          ? 'part_' + data.productId + '_v' + data.version
+            : data.type == 'product_initial_stock'
+              ? 'product_' + data.productId + '_v1'
+              : data.type in ['product_restock', 'product_manual_adjustment']
+                ? 'product_' + data.productId + '_v' + data.version
+                  : data.type == 'product_sale'
+                    ? 'product_' + data.productId + '_v' + data.version
+          : data.repairId + '_v' + data.version + '_' + data.inventoryCollection + '_' + data.productId;
+      return data.inventoryCollection in ['parts', 'products'] &&
+        movementId == expectedId &&
+        data.delta is int && data.delta != 0 &&
+        data.version is int &&
+        data.userId == request.auth.uid &&
+        hasAccess(data.get('ownerId', '')) &&
+        existsAfter(inventoryPath) &&
+        getAfter(inventoryPath).data.ownerId == data.ownerId &&
+        getAfter(inventoryPath).data.stock ==
+          (exists(inventoryPath) ? get(inventoryPath).data.stock : 0) + data.delta &&
+        getAfter(inventoryPath).data.lastStockMovementId == movementId &&
+        (
+          !(data.type in [
+            'part_restock', 'part_manual_adjustment', 'part_initial_stock',
+            'product_restock', 'product_manual_adjustment', 'product_initial_stock', 'product_sale'
+          ]) ||
+          getAfter(inventoryPath).data.stockVersion == data.version
+        ) &&
+        (
+          (data.type == 'repair_part_adjustment' &&
+            hasMenu('reparation') &&
+            existsAfter(/databases/$(database)/documents/repairs/$(data.repairId)) &&
+            getAfter(/databases/$(database)/documents/repairs/$(data.repairId)).data.ownerId == data.ownerId) ||
+          (data.type == 'repair_delete_return' &&
+            hasMenu('reparation') && isAdminRole() &&
+            exists(/databases/$(database)/documents/repairs/$(data.repairId)) &&
+            !existsAfter(/databases/$(database)/documents/repairs/$(data.repairId)) &&
+            get(/databases/$(database)/documents/repairs/$(data.repairId)).data.ownerId == data.ownerId) ||
+          (data.type in ['part_restock', 'part_manual_adjustment', 'part_initial_stock'] &&
+            data.inventoryCollection == 'parts' &&
+            (data.type == 'part_initial_stock'
+              ? perm('pieces', 'addEdit') && perm('pieces', 'adjustStock')
+              : perm('pieces', 'adjustStock')) &&
+            (!exists(inventoryPath) || data.type == 'part_initial_stock' || data.type == 'part_restock')) ||
+          (data.type in ['product_restock', 'product_manual_adjustment', 'product_initial_stock'] &&
+            data.inventoryCollection == 'products' &&
+            (data.type == 'product_initial_stock'
+              ? perm('products', 'addEdit') && perm('products', 'adjustStock')
+              : perm('products', 'adjustStock')) &&
+            (!exists(inventoryPath) || data.type == 'product_initial_stock' || data.type == 'product_restock')) ||
+          (data.type == 'product_sale' &&
+            data.inventoryCollection == 'products' &&
+            hasMenu('pos') &&
+            data.delta < 0 &&
+            existsAfter(/databases/$(database)/documents/sales/$(data.saleId)) &&
+            getAfter(/databases/$(database)/documents/sales/$(data.saleId)).data.ownerId == data.ownerId &&
+            exists(inventoryPath))
+        );
+    }
+    function validDashboardStockUpdate() {
+      return onlyChangedFields(['stock', 'buyPrice']) &&
+        validStock(request.resource.data);
+    }
+    function hasValidInitialStockMovement(inventoryCollection, inventoryId) {
+      let movementId = request.resource.data.get('lastStockMovementId', '');
+      let movementPath = /databases/$(database)/documents/stock_movements/$(movementId);
+      let expectedType = inventoryCollection == 'products'
+        ? 'product_initial_stock'
+        : 'part_initial_stock';
+      return request.resource.data.get('stock', 0) == 0 ||
+        (
+          perm(inventoryCollection == 'products' ? 'products' : 'pieces', 'adjustStock') &&
+          movementId is string &&
+          !exists(movementPath) &&
+          existsAfter(movementPath) &&
+          getAfter(movementPath).data.productId == inventoryId &&
+          getAfter(movementPath).data.inventoryCollection == inventoryCollection &&
+          getAfter(movementPath).data.ownerId == request.resource.data.get('ownerId', '') &&
+          getAfter(movementPath).data.userId == request.auth.uid &&
+          getAfter(movementPath).data.delta == request.resource.data.get('stock', 0) &&
+          getAfter(movementPath).data.version == 1 &&
+          (getAfter(movementPath).data.type == expectedType ||
+            (inventoryCollection == 'parts' && getAfter(movementPath).data.type == 'part_restock'))
+        );
+    }
+    function validClientDebtOnlyUpdate() {
+      return onlyChangedFields(['debt']) &&
+        request.resource.data.get('debt', -1) is number &&
+        request.resource.data.get('debt', -1) >= 0;
+    }
+    // Livraison / encaissement / remise : admin ou profil de vente. Jamais le Technicien.
+    function canCash() {
+      return hasMenu('pos');
+    }
+
+    match /users/{userId} {
+      // Auto-inscription publique, si elle est activée côté projet, ne crée
+      // qu'un profil utilisateur standard et ne peut jamais accorder le rôle admin.
+      allow create: if isAuthenticated() && request.auth.uid == userId &&
+        request.resource.data.uid == userId &&
+        request.resource.data.role == "user" &&
+        request.resource.data.status == "active" &&
+        request.resource.data.ownerId == userId &&
+        request.resource.data.get('allowedMenus', []).hasOnly([
+          'dashboard', 'pos', 'products', 'clients', 'sales', 'invoices'
+        ]) &&
+        !('password' in request.resource.data);
+
+      // Création d'un collaborateur par l'admin propriétaire du magasin cible
+      // uniquement (isolation stricte entre magasins). Autorise aussi
+      // l'auto-migration d'un admin (compte local -> vrai compte Firebase Auth), reconnue
+      // au fait que l'email du nouveau document correspond à celui du compte actuellement connecté.
+      allow create: if isAuthenticated() && request.auth.uid != userId && (
+        isAdmin() ||
+        (
+          isStoreAdmin(request.auth.uid) &&
+          (
+            (request.resource.data.role == 'user' && request.resource.data.ownerId == request.auth.uid) ||
+            (
+              request.resource.data.role == 'admin' &&
+              request.resource.data.ownerId == userId &&
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == request.resource.data.email
+            )
+          )
+        )
+      ) && !('password' in request.resource.data);
+
+      // User profiles are visible only to their store and their own account.
+      // profiles in their own store, while each account can always read its own profile.
+      allow get: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isAdmin() ||
+        (isStoreAdmin(request.auth.uid) &&
+         resource.data.get('ownerId', resource.id) == request.auth.uid)
+      );
+      allow list: if isAdmin() || (
+        isStoreAdmin(request.auth.uid) &&
+        resource.data.get('ownerId', resource.id) == request.auth.uid
+      );
+
+      // Modification par soi-même sans changer rôle/statut/ownerId
+      allow update: if isAuthenticated() && request.auth.uid == userId &&
+        request.resource.data.role == resource.data.get('role', 'user') &&
+        request.resource.data.status == resource.data.get('status', 'active') &&
+        request.resource.data.ownerId == resource.data.get('ownerId', userId) &&
+        !('password' in request.resource.data) &&
+        // un collaborateur ne peut pas s'accorder lui-même des menus
+        (resource.data.get('role', 'user') == 'admin' ||
+         (request.resource.data.get('allowedMenus', null) == resource.data.get('allowedMenus', null) &&
+          request.resource.data.get('permissions', null) == resource.data.get('permissions', null)));
+
+      // La modification globale est désactivée; l'admin magasin est limité aux règles ci-dessous.
+      allow update: if isAdmin() &&
+        !('password' in request.resource.data);
+
+      // Modification par un admin de son propre magasin uniquement, et uniquement
+      // sur ses propres collaborateurs (jamais sur un autre magasin) :
+      // - le document ciblé doit déjà appartenir à ce magasin (ownerId == requester)
+      // - le résultat de la modification doit rester un collaborateur (role: user)
+      //   rattaché au même magasin (ownerId inchangé)
+      allow update: if isAuthenticated() && request.auth.uid != userId &&
+        isStoreAdmin(request.auth.uid) &&
+        resource.data.get('ownerId', resource.id) == request.auth.uid &&
+        request.resource.data.role == 'user' &&
+        request.resource.data.ownerId == request.auth.uid &&
+        !('password' in request.resource.data);
+
+      // Suppression par un admin de son propre collaborateur ou de son ancien profil
+      // (nettoyage après auto-migration).
+      allow delete: if isAdmin() || (
+        isAuthenticated() && request.auth.uid != userId &&
+        isStoreAdmin(request.auth.uid) &&
+        resource.data.get('ownerId', resource.id) == request.auth.uid
+      ) || (
+        isAuthenticated() && request.auth.uid == userId && isStoreAdmin(userId)
+      );
+    }
+
+    match /products/{productId} {
+      // Repairs, POS, invoices, sales history, dashboard and store export all
+      // depend on product reads; unrelated authenticated profiles do not.
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['products', 'pos', 'invoices', 'sales', 'dashboard', 'settings']) &&
+        (isAdminRole() || !('buyPrice' in resource.data));
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        hasMenu('products') && perm('products', 'addEdit') && validStock(request.resource.data) &&
+        !('buyPrice' in request.resource.data) &&
+        (perm('products', 'editSellPrice') || request.resource.data.get('sellPrice', 0) == 0) &&
+        (isAdminRole() ||
+         request.resource.data.keys().hasOnly([
+           'name', 'category', 'sellPrice', 'barcode', 'reference', 'stock',
+           'lowStockAlert', 'expirationDate', 'active', 'inventoryType',
+           'stockVersion', 'lastStockMovementId', 'ownerId', 'userId', 'createdAt'
+         ])) &&
+        hasValidInitialStockMovement('products', productId);
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        validStock(request.resource.data) &&
+        !('buyPrice' in request.resource.data) &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') && (
+          (perm('products', 'addEdit') &&
+            validProductMetadataUpdate(productId) &&
+            request.resource.data.get('stock', 0) == resource.data.get('stock', 0)) ||
+          ((perm('products', 'adjustStock') || hasMenu('pos')) &&
+            validTechnicianProductStockUpdate(productId)) ||
+          (hasMenu('reparation') && validRepairStockOnlyUpdate(productId))
+        );
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasMenu('products') && perm('products', 'delete');
+    }
+
+    match /parts/{partId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['pieces', 'reparation', 'products']);
+      allow create: if hasAccess(request.resource.data.get('ownerId', '')) &&
+        hasMenu('pieces') &&
+        perm('pieces', 'addEdit') &&
+        (perm('pieces', 'editSellPrice') || request.resource.data.get('sellPrice', 0) == 0) &&
+        (isAdminRole() || request.resource.data.keys().hasOnly([
+          'name', 'brand', 'category', 'compatibleModels', 'reference',
+          'description', 'barcode', 'sellPrice', 'lowStockAlert', 'active', 'stock',
+          'stockVersion', 'lastStockMovementId', 'updatedAt', 'createdAt',
+          'inventoryType', 'ownerId', 'legacyProductId'
+        ])) &&
+        request.resource.data.get('ownerId', '') ==
+          (isAdminRole() ? request.resource.data.get('ownerId', '') : userData().get('ownerId', request.auth.uid)) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0 &&
+        !('buyPrice' in request.resource.data) &&
+        hasValidInitialStockMovement('parts', partId);
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        !('buyPrice' in request.resource.data) &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        (
+          (perm('pieces', 'addEdit') &&
+            onlyChangedFields([
+              'name', 'brand', 'category', 'compatibleModels', 'reference', 'description',
+              'barcode', 'sellPrice', 'lowStockAlert', 'active', 'updatedAt', 'inventoryType'
+            ]) &&
+            request.resource.data.get('stock', 0) == resource.data.get('stock', 0) &&
+            (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellPrice']) ||
+              perm('pieces', 'editSellPrice'))) ||
+          (perm('pieces', 'adjustStock') && validRepairPartStockOnlyUpdate(partId)) ||
+          (hasMenu('reparation') && validRepairPartStockOnlyUpdate(partId))
+        );
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasMenu('pieces') && perm('pieces', 'delete');
+    }
+
+    match /part_costs/{partId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        perm('pieces', 'viewBuyPrice');
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        hasMenu('products') &&
+        request.resource.data.buyPrice is number &&
+        request.resource.data.buyPrice >= 0;
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        hasMenu('products') &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        request.resource.data.buyPrice is number &&
+        request.resource.data.buyPrice >= 0;
+      allow delete: if false;
+    }
+
+    match /product_costs/{productId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        perm('products', 'viewBuyPrice');
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        request.resource.data.buyPrice is number &&
+        request.resource.data.buyPrice >= 0;
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        request.resource.data.buyPrice is number &&
+        request.resource.data.buyPrice >= 0;
+      allow delete: if false;
+    }
+
+    match /clients/{clientId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['clients', 'pos', 'invoices', 'sales', 'reparation', 'settings']);
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        hasMenu('clients') && perm('clients', 'addEdit');
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) && (
+        (hasMenu('clients') && perm('clients', 'addEdit')) ||
+        (hasAnyMenu(['pos', 'invoices', 'sales']) && validClientDebtOnlyUpdate())
+      );
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasMenu('clients') && perm('clients', 'delete');
+    }
+
+    match /sales/{saleId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['sales', 'pos', 'products', 'dashboard', 'clients', 'settings']);
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        hasAnyMenu(['pos', 'invoices']);
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasAnyMenu(['sales', 'clients', 'settings']);
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasAnyMenu(['sales', 'settings']);
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['invoices', 'sales', 'clients', 'settings']);
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        hasAnyMenu(['pos', 'invoices']);
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasAnyMenu(['invoices', 'clients']);
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        hasAnyMenu(['invoices', 'sales', 'settings']);
+    }
+
+    match /counters/{counterId} {
+      allow read, write: if isAuthenticated() && (
+        isAdmin() ||
+        (hasAnyMenu(['pos', 'invoices']) && (
+          counterId == 'invoices_' + request.auth.uid ||
+          (userExists() && counterId == 'invoices_' + userData().get('ownerId', ''))
+        )) ||
+        (hasMenu('reparation') && (
+          counterId == 'repairs_' + request.auth.uid ||
+          (userExists() && counterId == 'repairs_' + userData().get('ownerId', ''))
+        ))
+      );
+    }
+
+    match /categories/{categoryId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasAnyMenu(['pieces', 'products', 'pos', 'invoices', 'dashboard']);
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        perm(request.resource.data.get('type', '') == 'part' ? 'pieces' : 'products', 'addEdit');
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        perm(resource.data.get('type', '') == 'part' ? 'pieces' : 'products', 'addEdit');
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        perm(resource.data.get('type', '') == 'part' ? 'pieces' : 'products', 'delete');
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated() &&
+        (isAdmin() || (
+          hasAccess(settingId) &&
+          hasAnyMenu(['settings', 'products', 'pos', 'clients', 'sales', 'invoices', 'dashboard', 'reparation'])
+        ));
+      allow write: if isAuthenticated() && (
+        isAdmin() ||
+        (hasAccess(settingId) && hasMenu('settings'))
+      );
+    }
+
+    match /notes/{noteId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) && hasMenu('notes');
+      allow create: if hasAccess(request.resource.data.ownerId) && hasMenu('notes');
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) && hasMenu('notes');
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) && hasMenu('notes');
+    }
+
+    match /supplies/{supplyId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) && isAdminRole();
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        isAdminRole();
+      allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        isAdminRole();
+      allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
+        isAdminRole();
+    }
+
+    // ---------- Réparations ----------
+    match /repairs/{repairId} {
+      // Transactional creates read their deterministic ticket id to make repeated
+      // submissions idempotent; a missing ticket contains no store data to expose.
+      allow get: if hasMenu('reparation') &&
+        (!exists(/databases/$(database)/documents/repairs/$(repairId)) ||
+         (hasAccess(resource.data.ownerId) &&
+          (isAdmin() || isAdminRole() || resource.data.get('costsSeparated', false) == true)));
+      allow list: if hasAccess(resource.data.ownerId) && hasMenu('reparation') &&
+        (isAdmin() || isAdminRole() || resource.data.get('costsSeparated', false) == true);
+
+      // Création : le Technicien ne peut ni livrer ni encaisser
+      allow create: if hasAccess(request.resource.data.ownerId) && hasMenu('reparation') && (
+        request.resource.data.get('costsSeparated', false) == true &&
+        (canCash() ||
+         (request.resource.data.status != 'livre' && request.resource.data.get('paid', 0) == 0))
+      );
+
+      // Modification : sans droit de caisse, 'paid' et 'discount' restent figés
+      // et le passage au statut 'livre' est refusé.
+      allow update: if hasAccess(resource.data.ownerId) && hasMenu('reparation') &&
+        request.resource.data.ownerId == resource.data.ownerId && (
+          (isAdmin() || isAdminRole()) ||
+          canCash() ||
+          (request.resource.data.get('costsSeparated', false) == true && (
+            request.resource.data.get('paid', 0) == resource.data.get('paid', 0) &&
+            request.resource.data.get('discount', 0) == resource.data.get('discount', 0) &&
+            (request.resource.data.status != 'livre' || resource.data.status == 'livre')
+          ))
+        );
+
+      // Suppression : administrateurs uniquement (comme dans l'interface)
+      allow delete: if hasAccess(resource.data.ownerId) && hasMenu('reparation') &&
+        (isAdmin() || isAdminRole());
+    }
+
+    match /repair_costs/{repairId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        perm('reparation', 'viewCosts');
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        exists(/databases/$(database)/documents/repairs/$(repairId)) &&
+        get(/databases/$(database)/documents/repairs/$(repairId)).data.ownerId == request.resource.data.ownerId;
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '');
+      allow delete: if false;
+    }
+
+    match /stock_movements/{movementId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        hasMenu('reparation');
+      allow create: if validStockMovement(movementId);
+      allow update, delete: if false;
+    }
+
+    // Dettes clients créées à la livraison d'une réparation
+    match /client_debts/{debtId} {
+      allow read: if hasAccess(resource.data.ownerId) && (canCash() || hasMenu('clients'));
+      allow create: if hasAccess(request.resource.data.ownerId) && canCash();
+      allow update, delete: if hasAccess(resource.data.ownerId) && canCash();
+    }
+
+    match /audit_logs/{logId} {
+      allow create: if hasAccess(request.resource.data.ownerId) &&
+        hasAnyMenu(['products', 'sales']);
+      allow read: if isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (isAdmin() ||
+         (isAdminRole() &&
+          hasAccess(resource.data.get('ownerId', ''))));
+      allow update, delete: if false;
+    }
+
+    function validStartupSchedule(schedule) {
+      return schedule.keys().hasAll(['allDay', 'start', 'end']) &&
+        schedule.get('allDay', false) is bool &&
+        schedule.get('start', '') is string &&
+        schedule.get('start', '').matches('^([01][0-9]|2[0-3]):[0-5][0-9]$') &&
+        schedule.get('end', '') is string &&
+        schedule.get('end', '').matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+    function validStartupConfig(data) {
+      return data.keys().hasAll([
+          'ownerId', 'enabled', 'frequency', 'schedule', 'volume', 'loop', 'background'
+        ]) &&
+        data.get('enabled', false) is bool &&
+        data.get('frequency', '') in ['each_open', 'daily_period'] &&
+        data.get('volume', -1) is number &&
+        data.get('volume', -1) >= 0 && data.get('volume', -1) <= 1 &&
+        data.get('loop', false) is bool &&
+        data.get('background', false) is bool &&
+        data.get('ownerId', '') is string &&
+        data.get('schedule', {}).keys().hasAll(['coran', 'matin', 'soir', 'rizq']) &&
+        validStartupSchedule(data.schedule.coran) &&
+        validStartupSchedule(data.schedule.matin) &&
+        validStartupSchedule(data.schedule.soir) &&
+        validStartupSchedule(data.schedule.rizq);
+    }
+    function validStartupItem(data) {
+      return data.keys().hasOnly([
+          'ownerId', 'section', 'type', 'title', 'text', 'source', 'repeat',
+          'imageData', 'audioUrl', 'order', 'active', 'createdAt'
+        ]) &&
+        data.keys().hasAll(['ownerId', 'section', 'type', 'title', 'order', 'active']) &&
+        data.get('ownerId', '') is string &&
+        data.get('section', '') in ['coran', 'matin', 'soir', 'rizq'] &&
+        data.get('type', '') in ['text', 'image', 'audio'] &&
+        data.get('title', '') is string &&
+        data.get('title', '').size() > 0 &&
+        data.get('title', '').size() <= 200 &&
+        data.get('order', -1) is int &&
+        data.get('active', false) is bool &&
+        (
+          data.get('type', '') != 'text' ||
+          (data.get('text', '') is string && data.get('text', '').size() > 0 &&
+           data.get('text', '').size() <= 10000)
+        ) &&
+        (
+          !('imageData' in data) ||
+          (data.get('imageData', '') is string && data.get('imageData', '').size() < 600000)
+        ) &&
+        (
+          data.get('type', '') != 'image' ||
+          (data.get('imageData', '') is string && data.get('imageData', '').size() > 0)
+        ) &&
+        (
+          data.get('type', '') != 'audio' ||
+          (data.get('audioUrl', '') is string && data.get('audioUrl', '').matches('https://.*'))
+        );
+    }
+    match /startup_config/{ownerId} {
+      allow read: if hasAccess(ownerId);
+      allow create, update: if isStoreOwnerAdmin(ownerId) &&
+        request.resource.data.get('ownerId', '') == ownerId &&
+        validStartupConfig(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /startup_items/{itemId} {
+      allow read: if hasAccess(resource.data.get('ownerId', ''));
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        validStartupItem(request.resource.data);
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        validStartupItem(request.resource.data);
+      allow delete: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+    }
+
+    match /otp_codes/{uid} {
+      allow read, write: if false;
+    }
+  }
+}

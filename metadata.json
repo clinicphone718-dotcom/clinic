@@ -1,0 +1,6 @@
+{
+  "name": "Phone Clinic",
+  "description": "Système complet de point de vente et gestion pour Phone Clinic - caisse, réparations, stock, clients, facturation et statistiques.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

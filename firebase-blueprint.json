@@ -1,0 +1,155 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Produit",
+      "description": "Un produit ou pièce en stock (téléphonie, réparation, accessoire, pièce de rechange)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Nom du produit" },
+        "category": { "type": "string", "description": "Catégorie du produit" },
+        "buyPrice": { "type": "number", "description": "Prix d'achat" },
+        "sellPrice": { "type": "number", "description": "Prix de vente" },
+        "barcode": { "type": "string", "description": "Code à barre ou référence unique" },
+        "stock": { "type": "number", "description": "Quantité en stock" },
+        "expirationDate": { "type": "string", "format": "date", "description": "Date d'expiration (optionnel)" },
+        "lowStockAlert": { "type": "number", "description": "Seuil d'alerte stock faible" }
+      },
+      "required": ["name", "category", "buyPrice", "sellPrice", "stock"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Un client du magasin",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Nom complet" },
+        "code": { "type": "string", "description": "Code client personnalisé" },
+        "phone": { "type": "string", "description": "Numéro de téléphone" },
+        "address": { "type": "string", "description": "Adresse" },
+        "debt": { "type": "number", "description": "Montant total des dettes" }
+      },
+      "required": ["name"]
+    },
+    "Sale": {
+      "title": "Vente",
+      "description": "Une transaction de vente",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date-time", "description": "Date et heure de la vente" },
+        "clientId": { "type": "string", "description": "ID du client (si applicable)" },
+        "clientName": { "type": "string", "description": "Nom du client" },
+        "total": { "type": "number", "description": "Montant total de la vente" },
+        "paid": { "type": "number", "description": "Montant payé" },
+        "debt": { "type": "number", "description": "Montant restant en dette" },
+        "invoiceId": { "type": "string", "description": "ID de la facture associée" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "productId": { "type": "string" },
+              "name": { "type": "string" },
+              "quantity": { "type": "number" },
+              "price": { "type": "number" },
+              "total": { "type": "number" }
+            }
+          }
+        }
+      },
+      "required": ["date", "total", "paid", "items"]
+    },
+    "Invoice": {
+      "title": "Facture",
+      "description": "Une facture générée pour une vente",
+      "type": "object",
+      "properties": {
+        "number": { "type": "string", "description": "Numéro de facture (ex: FAC-2026-0001)" },
+        "saleId": { "type": "string", "description": "ID de la vente associée" },
+        "clientId": { "type": "string", "description": "ID du client" },
+        "clientName": { "type": "string", "description": "Nom du client" },
+        "clientPhone": { "type": "string", "description": "Téléphone du client" },
+        "clientAddress": { "type": "string", "description": "Adresse du client" },
+        "total": { "type": "number", "description": "Total général" },
+        "paid": { "type": "number", "description": "Montant payé" },
+        "debt": { "type": "number", "description": "Reste à payer" },
+        "date": { "type": "string", "format": "date-time", "description": "Date de la facture" },
+        "items": { "type": "array", "description": "Liste des produits" }
+      },
+      "required": ["number", "saleId", "total", "paid", "date"]
+    },
+    "Category": {
+      "title": "Catégorie",
+      "description": "Une catégorie de produits",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Nom de la catégorie" },
+        "type": { "type": "string", "description": "Type ou icône de base pour le style" }
+      },
+      "required": ["name", "type"]
+    },
+    "StoreSettings": {
+      "title": "Paramètres Magasin",
+      "description": "Informations sur le magasin",
+      "type": "object",
+      "properties": {
+        "storeName": { "type": "string", "description": "Nom du magasin" },
+        "currency": { "type": "string", "description": "Devise utilisée" },
+        "address": { "type": "string", "description": "Adresse du magasin" },
+        "phone": { "type": "string", "description": "Téléphone du magasin" },
+        "tva": { "type": "number", "description": "Taux de TVA par défaut" },
+        "minStockAlert": { "type": "number", "description": "Seuil d'alerte de stock minimum par défaut" }
+      },
+      "required": ["storeName", "currency", "tva"]
+    },
+    "UserProfile": {
+      "title": "Profil Utilisateur",
+      "description": "Informations de profil et rôle de l'utilisateur",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "ID unique Firebase" },
+        "email": { "type": "string", "description": "Adresse email" },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "Rôle de l'utilisateur" },
+        "status": { "type": "string", "enum": ["active", "banned"], "description": "Statut du compte" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "Une note ou mémo avec une date associée",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Titre du mémo" },
+        "content": { "type": "string", "description": "Description du mémo" },
+        "date": { "type": "string", "format": "date", "description": "Date associée" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Date de création" },
+        "userId": { "type": "string", "description": "Créateur" }
+      },
+      "required": ["title", "content", "date", "createdAt", "userId"]
+    },
+    "Supply": {
+      "title": "Supply",
+      "description": "Un enregistrement d'approvisionnement ou de dépenses de stock",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "description": "ID du produit" },
+        "productName": { "type": "string", "description": "Nom du produit" },
+        "quantity": { "type": "number", "description": "Quantité d'approvisionnement" },
+        "buyPrice": { "type": "number", "description": "Prix d'achat unitaire" },
+        "totalCost": { "type": "number", "description": "Coût total" },
+        "date": { "type": "string", "format": "date-time", "description": "Date et heure de l'approvisionnement" }
+      },
+      "required": ["productId", "productName", "quantity", "buyPrice", "totalCost", "date"]
+    }
+  },
+  "firestore": {
+    "/products": { "schema": "Product", "description": "Liste des produits" },
+    "/clients": { "schema": "Client", "description": "Liste des clients" },
+    "/sales": { "schema": "Sale", "description": "Historique des ventes" },
+    "/invoices": { "schema": "Invoice", "description": "Liste des factures" },
+    "/counters": { "schema": "object", "description": "Compteurs pour numérotation automatique" },
+    "/settings": { "schema": "StoreSettings", "description": "Paramètres de l'application" },
+    "/categories": { "schema": "Category", "description": "Liste des catégories" },
+    "/users": { "schema": "UserProfile", "description": "Liste des utilisateurs et leurs rôles" },
+    "/notes": { "schema": "Note", "description": "Liste des notes et mémos" },
+    "/supplies": { "schema": "Supply", "description": "Liste des approvisionnements de stock" }
+  }
+}
