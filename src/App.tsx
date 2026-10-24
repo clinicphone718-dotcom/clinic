@@ -23,7 +23,8 @@ import {
   CheckCircle,
   Wifi,
   WifiOff,
-  Wrench
+  Wrench,
+  BookOpen,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { UserProfile, Note } from './types';
@@ -32,6 +33,67 @@ import { hasMenuAccess } from './lib/permissions';
 import { APP_LOGO_URL, APP_NAME, APP_TAGLINE } from './config/brand';
 import { ALLOW_SELF_SIGNUP } from './config/firebase';
 export { hasMenuAccess } from './lib/permissions';
+
+const NAV_SECTIONS = [
+  {
+    title: 'VENTE',
+    items: [
+      { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
+      { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
+      { id: 'sales', name: 'Historique', path: '/sales', icon: History },
+      { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
+    ],
+  },
+  {
+    title: 'ATELIER',
+    items: [
+      { id: 'reparation', name: 'Partie Réparation', path: '/repairs', icon: Wrench },
+      { id: 'pieces', name: 'Pièces Détachées', path: '/parts', icon: Package },
+    ],
+  },
+  {
+    title: 'CATALOGUE',
+    items: [
+      { id: 'products', name: 'Articles / Services', path: '/products', icon: Package },
+      { id: 'clients', name: 'Clients', path: '/clients', icon: Users },
+    ],
+  },
+  {
+    title: 'OUTILS',
+    items: [
+      { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
+      { id: 'startup', name: 'Coran & Adhkar', path: '/settings#startup-settings', icon: BookOpen, adminOnly: true },
+    ],
+  },
+  {
+    title: 'ADMINISTRATION',
+    items: [
+      { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
+      { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
+    ],
+  },
+];
+
+function isAdminOwner(userProfile: UserProfile | null): boolean {
+  return userProfile?.role === 'admin' &&
+    (userProfile.ownerId || userProfile.uid) === userProfile.uid;
+}
+
+function getAccessibleNavigation(userProfile: UserProfile | null) {
+  return NAV_SECTIONS.map(section => ({
+    ...section,
+    items: section.items.filter(item => {
+      if (item.adminOnly && !isAdminOwner(userProfile)) return false;
+      if (item.id === 'settings') return true;
+      if (item.id === 'startup') return isAdminOwner(userProfile);
+      return hasMenuAccess(userProfile, item.id);
+    }),
+  })).filter(section => section.items.length > 0);
+}
+
+function getFirstAccessiblePath(userProfile: UserProfile | null): string {
+  return getAccessibleNavigation(userProfile).flatMap(section => section.items)[0]?.path || '/settings';
+}
 
 // Components
 import Dashboard from './components/Dashboard';
@@ -153,31 +215,7 @@ function Sidebar({
   const location = useLocation();
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone;
-  
-  const allNavItems = [
-    { id: 'reparation', name: 'Partie Réparation', path: '/repairs', icon: Wrench },
-    { id: 'products', name: 'Articles / Services', path: '/products', icon: Package },
-    { id: 'pieces', name: 'Pièces Détachées', path: '/parts', icon: Package },
-    { id: 'clients', name: 'Clients', path: '/clients', icon: Users },
-    { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
-    { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
-    { id: 'sales', name: 'Historique', path: '/sales', icon: History },
-    { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
-    { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
-    { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
-    { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
-  ];
-
-  const navItems = allNavItems.filter((item) => {
-    if (item.adminOnly && (
-      userProfile?.role !== 'admin' ||
-      (userProfile.ownerId || userProfile.uid) !== userProfile.uid
-    )) return false;
-    // "Paramètres" est toujours accessible : chaque utilisateur peut y changer
-    // son code de sécurité (les paramètres du magasin restent soumis à la permission).
-    if (item.id === 'settings') return true;
-    return hasMenuAccess(userProfile, item.id);
-  });
+  const navSections = getAccessibleNavigation(userProfile);
 
   return (
     <>
@@ -213,35 +251,44 @@ function Sidebar({
             </button>
           </div>
 
-          <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname === item.path;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  onClick={() => setIsOpen(false)}
-                  className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-xl text-xs uppercase tracking-wider font-extrabold transition-all duration-300 relative group",
-                    isActive 
-                      ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/15" 
-                      : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  )}
-                >
-                  <Icon className={cn("w-4 h-4 transition-transform group-hover:scale-110 duration-300", isActive ? "text-white" : "text-slate-400")} />
-                  <span className="flex-1">{item.name}</span>
-                  {item.id === 'notes' && todayNotesCount > 0 && (
-                    <span className={cn(
-                      "px-2 py-0.5 text-[10px] rounded-full font-black min-w-[18px] text-center",
-                      isActive ? "bg-white text-indigo-600 animate-pulse" : "bg-rose-500 text-white"
-                    )}>
-                      {todayNotesCount}
-                    </span>
-                  )}
-                </Link>
-              );
-            })}
+          <nav className="flex-1 space-y-5 overflow-y-auto px-4 py-6">
+            {navSections.map(section => (
+              <section key={section.title} aria-label={section.title}>
+                <h2 className="mb-2 px-3 text-[9px] font-black tracking-[0.16em] text-slate-400">{section.title}</h2>
+                <div className="space-y-1">
+                  {section.items.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = item.path === '/settings#startup-settings'
+                      ? location.pathname === '/settings' && location.hash === '#startup-settings'
+                      : location.pathname === item.path;
+                    return (
+                      <Link
+                        key={item.path}
+                        to={item.path}
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex min-h-10 items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all duration-200 relative group",
+                          isActive
+                            ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/15"
+                            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                        )}
+                      >
+                        <Icon className={cn("h-4 w-4 transition-transform group-hover:scale-110", isActive ? "text-white" : "text-slate-400")} />
+                        <span className="flex-1">{item.name}</span>
+                        {item.id === 'notes' && todayNotesCount > 0 && (
+                          <span className={cn(
+                            "min-w-[18px] rounded-full px-2 py-0.5 text-center text-[10px] font-black",
+                            isActive ? "bg-white text-indigo-600" : "bg-rose-500 text-white"
+                          )}>
+                            {todayNotesCount}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
           </nav>
 
           {/* PWA / Offline Status Cards in Sidebar */}
@@ -773,7 +820,7 @@ export default function App() {
  
             <div className="p-4 lg:p-8 flex-1">
               <Routes>
-                <Route path="/" element={hasMenuAccess(userProfile, 'dashboard') ? <Dashboard userProfile={userProfile} /> : <Navigate to={hasMenuAccess(userProfile, 'pos') ? '/pos' : (hasMenuAccess(userProfile, 'products') ? '/products' : (hasMenuAccess(userProfile, 'clients') ? '/clients' : (hasMenuAccess(userProfile, 'sales') ? '/sales' : (hasMenuAccess(userProfile, 'invoices') ? '/invoices' : (hasMenuAccess(userProfile, 'reparation') ? '/repairs' : '/settings')))))} replace />} />
+                <Route path="/" element={hasMenuAccess(userProfile, 'dashboard') ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/clients" element={hasMenuAccess(userProfile, 'clients') ? <Clients userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/pos" element={hasMenuAccess(userProfile, 'pos') ? <POS userProfile={userProfile} /> : <Navigate to="/" replace />} />
@@ -783,7 +830,7 @@ export default function App() {
                 <Route path="/parts" element={hasMenuAccess(userProfile, 'pieces') ? <Parts userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/notes" element={hasMenuAccess(userProfile, 'notes') ? <Notes userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
-                <Route path="/startup" element={<Navigate to="/settings" replace />} />
+                <Route path="/startup" element={<Navigate to="/settings#startup-settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
                 <Route path="/settings" element={<Settings userProfile={userProfile} />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

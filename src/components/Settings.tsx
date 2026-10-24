@@ -1215,7 +1215,7 @@ export default function Settings({ userProfile }: SettingsProps) {
       )}
 
       {canManageStartup && (
-        <section className="space-y-4 rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs">
+        <section id="startup-settings" className="space-y-4 rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600"><Music2 className="h-5 w-5" /></div>
             <div>
