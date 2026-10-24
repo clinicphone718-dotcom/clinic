@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { ShoppingCart, Mail, Lock, AlertCircle, Chrome } from 'lucide-react';
@@ -11,6 +11,7 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -111,6 +112,28 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
     }
   };
 
+  const handlePasswordReset = async () => {
+    setError('');
+    setResetMessage('');
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setError('Saisissez votre adresse email pour recevoir un lien de réinitialisation.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      setResetMessage('Si cette adresse correspond à un compte, un lien de réinitialisation a été envoyé.');
+    } catch (resetError) {
+      const code = typeof resetError === 'object' && resetError !== null && 'code' in resetError ? resetError.code : '';
+      setError(code === 'auth/invalid-email'
+        ? 'Veuillez saisir une adresse email valide.'
+        : 'Impossible d’envoyer le lien. Vérifiez votre connexion et réessayez.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
       <div className="max-w-md w-full bg-white rounded-3xl shadow-xl shadow-slate-200/60 p-6 sm:p-8 border border-slate-200/80">
@@ -198,6 +221,18 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
             {loading ? 'Chargement...' : isRegistering ? "Créer un compte par Email" : 'Se connecter par Email'}
           </button>
         </form>
+
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={() => void handlePasswordReset()}
+            disabled={loading}
+            className="min-h-10 px-3 text-xs font-semibold text-indigo-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg disabled:opacity-50"
+          >
+            Mot de passe oublié ?
+          </button>
+          {resetMessage && <p role="status" className="mt-2 text-xs font-semibold text-emerald-700">{resetMessage}</p>}
+        </div>
 
         {ALLOW_SELF_SIGNUP && <div className="mt-6 text-center">
           <button

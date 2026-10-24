@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
+import { apiFetch } from '../lib/api';
 import { Invoice, Product, Client, SaleItem, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, FileText, Eye, X, Printer, Download, User, Calendar, ShoppingBag, Plus, Trash2, Minus, AlertCircle, CheckCircle2 } from 'lucide-react';
@@ -323,7 +324,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
       const currentUser = auth.currentUser;
       if (!currentUser) throw new Error('Session invalide. Veuillez vous reconnecter.');
       const idToken = await currentUser.getIdToken();
-      const response = await fetch('/api/invoices/pdf', {
+      const response = await apiFetch('/invoices/pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

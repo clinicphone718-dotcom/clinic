@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp, runTransaction, getDoc, getDocs, where, getDocFromServer } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { apiFetch } from '../lib/api';
 import { Product, Client, SaleItem, Sale, Invoice, Category, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, ShoppingCart, Trash2, Plus, Minus, User, CreditCard, CheckCircle, AlertCircle, Printer, X, FileText, Barcode, Filter, Tag, Coins, Percent, TrendingUp, UserCheck, Flame } from 'lucide-react';
@@ -525,7 +526,7 @@ export default function POS({ userProfile }: POSProps) {
       const currentUser = auth.currentUser;
       if (!currentUser) throw new Error('Session invalide. Veuillez vous reconnecter.');
       const idToken = await currentUser.getIdToken();
-      const response = await fetch('/api/invoices/pdf', {
+      const response = await apiFetch('/invoices/pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

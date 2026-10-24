@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
+import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { APP_NAME } from '../config/brand';
@@ -174,6 +174,95 @@ function SecurityCodeCard({ userProfile }: { userProfile: UserProfile | null }) 
   );
 }
 
+function AccountPasswordCard() {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null);
+  const strength = [
+    newPassword.length >= 8,
+    /[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword),
+    /\d/.test(newPassword),
+    /[^A-Za-z0-9]/.test(newPassword),
+  ].filter(Boolean).length;
+  const strengthLabel = ['Très faible', 'Faible', 'Moyen', 'Bon', 'Fort'][strength];
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setMessage(null);
+    if (newPassword.length < 8) {
+      setMessage({ text: 'Le nouveau mot de passe doit contenir au moins 8 caractères.', success: false });
+      return;
+    }
+    if (newPassword !== confirmation) {
+      setMessage({ text: 'La confirmation ne correspond pas au nouveau mot de passe.', success: false });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser?.email) throw new Error('Session invalide. Veuillez vous reconnecter.');
+      const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
+      await reauthenticateWithCredential(currentUser, credential);
+      await updatePassword(currentUser, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmation('');
+      setMessage({ text: 'Votre mot de passe a été modifié.', success: true });
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+      const text = code === 'auth/wrong-password' || code === 'auth/invalid-credential'
+        ? 'Le mot de passe actuel est incorrect.'
+        : code === 'auth/weak-password'
+          ? 'Choisissez un mot de passe plus robuste.'
+          : error instanceof Error
+            ? error.message
+            : 'Impossible de modifier le mot de passe.';
+      setMessage({ text, success: false });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="bg-white rounded-3xl border border-slate-100 shadow-xs overflow-hidden premium-shadow">
+      <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex items-center gap-3">
+        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Lock className="w-5 h-5" /></div>
+        <div>
+          <h2 className="font-bold text-slate-800 text-sm">Mon compte</h2>
+          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Changer mon mot de passe</p>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <label className="block space-y-1.5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+          Mot de passe actuel
+          <input type="password" autoComplete="current-password" required value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium normal-case tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
+        </label>
+        <label className="block space-y-1.5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+          Nouveau mot de passe
+          <input type="password" autoComplete="new-password" required minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium normal-case tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
+        </label>
+        <div aria-live="polite" className="space-y-1">
+          <div className="flex gap-1" aria-hidden="true">
+            {[1, 2, 3, 4].map(level => <span key={level} className={`h-1.5 flex-1 rounded-full ${strength >= level ? (strength <= 1 ? 'bg-rose-500' : strength === 2 ? 'bg-amber-500' : strength === 3 ? 'bg-lime-600' : 'bg-emerald-600') : 'bg-slate-100'}`} />)}
+          </div>
+          <p className="text-[11px] text-slate-500">Force : {newPassword ? strengthLabel : '—'} · 8 caractères minimum</p>
+        </div>
+        <label className="block space-y-1.5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+          Confirmer le nouveau mot de passe
+          <input type="password" autoComplete="new-password" required minLength={8} value={confirmation} onChange={event => setConfirmation(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium normal-case tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
+        </label>
+        {message && <p role={message.success ? 'status' : 'alert'} className={`rounded-xl border p-3 text-xs font-semibold ${message.success ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-700'}`}>{message.text}</p>}
+        <button type="submit" disabled={saving || !currentPassword || newPassword.length < 8 || newPassword !== confirmation} className="min-h-10 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+          {saving ? 'Modification…' : 'Changer mon mot de passe'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 export default function Settings({ userProfile }: SettingsProps) {
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -296,6 +385,7 @@ export default function Settings({ userProfile }: SettingsProps) {
           </p>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          <AccountPasswordCard />
           <SecurityCodeCard userProfile={userProfile} />
         </div>
       </div>
@@ -816,6 +906,7 @@ export default function Settings({ userProfile }: SettingsProps) {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* Card 0: Mon code de sécurité (visible par tous les utilisateurs) */}
+          <AccountPasswordCard />
           <SecurityCodeCard userProfile={userProfile} />
 
           {/* Card 1: Informations Générales de la Boutique */}

@@ -207,8 +207,8 @@ async function startServer() {
       if ((email !== undefined && typeof email !== "string") || (password !== undefined && typeof password !== "string")) {
         return res.status(400).json({ error: "Paramètres invalides." });
       }
-      if (password && password.length < 6) {
-        return res.status(400).json({ error: "Mot de passe : 6 caractères minimum." });
+      if (password && password.length < 8) {
+        return res.status(400).json({ error: "Mot de passe : 8 caractères minimum." });
       }
 
       // Fetch existing user from Firestore to determine their final role if not provided in request body
@@ -251,7 +251,9 @@ async function startServer() {
       
       if (status) firestoreUpdates.status = status;
 
-      await userRef.update(firestoreUpdates);
+      if (Object.keys(firestoreUpdates).length > 0) {
+        await userRef.update(firestoreUpdates);
+      }
 
       res.json({ success: true });
     } catch (err: any) {

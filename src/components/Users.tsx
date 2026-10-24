@@ -26,6 +26,7 @@ import {
 import { cn } from '../lib/utils';
 import { mergePermissions, PERMISSION_FLAGS, PermissionMap, PermissionPreset, permissionPreset, permissionsForPreset } from '../lib/permissions';
 import { useIsSuperAdmin } from '../lib/useIsSuperAdmin';
+import { apiRequest } from '../lib/api';
 
 const MENU_OPTIONS = [
   { id: 'dashboard', name: 'Tableau de bord', description: 'Statistiques et graphiques généraux' },
@@ -66,6 +67,12 @@ export default function Users({ userProfile }: UsersProps) {
   const [success, setSuccess] = useState<string | null>(null);
   const [errorOnCreate, setErrorOnCreate] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [passwordUser, setPasswordUser] = useState<UserProfile | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [deletingUser, setDeletingUser] = useState<UserProfile | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [migrationConfirmOpen, setMigrationConfirmOpen] = useState(false);
 
   const ownerId = userProfile?.ownerId || userProfile?.uid || 'no_user_auth';
 
@@ -182,7 +189,8 @@ export default function Users({ userProfile }: UsersProps) {
 
   const confirmPermissionMigration = async () => {
     if (!permissionMigrationBackupDownloaded || permissionMigrationPreview.length === 0 ||
-      permissionMigrationBusy || !window.confirm('Confirmer la migration idempotente des permissions ?')) return;
+      permissionMigrationBusy) return;
+    setMigrationConfirmOpen(false);
     setPermissionMigrationBusy(true);
     setPermissionMigrationError(null);
     try {
@@ -295,9 +303,40 @@ export default function Users({ userProfile }: UsersProps) {
     try {
       await sendPasswordResetEmail(auth, email);
       setSuccess(`Lien de réinitialisation envoyé à ${email}.`);
+      setErrorOnCreate(null);
       setTimeout(() => setSuccess(null), 5000);
     } catch (issue) {
-      alert(issue instanceof Error ? `Impossible d’envoyer le lien : ${issue.message}` : String(issue));
+      setErrorOnCreate(issue instanceof Error ? `Impossible d’envoyer le lien : ${issue.message}` : 'Impossible d’envoyer le lien.');
+    }
+  };
+
+  const handleChangeUserPassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!passwordUser) return;
+    if (newPassword.length < 8) {
+      setErrorOnCreate('Le mot de passe doit contenir au moins 8 caractères.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setErrorOnCreate('La confirmation ne correspond pas au nouveau mot de passe.');
+      return;
+    }
+    setErrorOnCreate(null);
+    setActionLoading(passwordUser.uid);
+    try {
+      await apiRequest('/admin/users/update', {
+        method: 'POST',
+        body: JSON.stringify({ uid: passwordUser.uid, password: newPassword }),
+      });
+      setPasswordUser(null);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setSuccess(`Mot de passe modifié pour ${passwordUser.email}.`);
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (issue) {
+      setErrorOnCreate(issue instanceof Error ? issue.message : 'Impossible de modifier le mot de passe.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -556,10 +595,8 @@ export default function Users({ userProfile }: UsersProps) {
 
   const handleToggleStatus = async (user: UserProfile) => {
     const newStatus = user.status === 'banned' ? 'active' : 'banned';
-    if (!confirm(`La caisse sera bloquée pour cet utilisateur. Êtes-vous sûr de vouloir ${newStatus === 'banned' ? 'bannir' : 'activer'} ${user.email} ?`)) {
-      return;
-    }
-
+    setActionLoading(user.uid);
+    setErrorOnCreate(null);
     try {
       // Directly check and update in Firestore using active session
       const userRef = doc(db, "users", user.uid);
@@ -569,8 +606,10 @@ export default function Users({ userProfile }: UsersProps) {
 
       setSuccess(`L'utilisateur ${user.email} est désormais ${newStatus === 'banned' ? 'banni' : 'actif'}.`);
       setTimeout(() => setSuccess(null), 3000);
-    } catch (err: any) {
-      alert(err.message || "Erreur de mise à jour");
+    } catch (err) {
+      setErrorOnCreate(err instanceof Error ? err.message : 'Erreur de mise à jour.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -579,29 +618,29 @@ export default function Users({ userProfile }: UsersProps) {
       setErrorOnCreate('Vous ne pouvez pas supprimer votre propre compte administrateur.');
       return;
     }
-    if (!window.confirm(`Supprimer définitivement ${user.email} de Firebase Authentication et retirer son profil du magasin ?`)) {
+    const storeOwnerId = userProfile?.ownerId || userProfile?.uid;
+    const storeAdmins = users.filter(profile =>
+      profile.role === 'admin' && (profile.ownerId || profile.uid) === storeOwnerId
+    );
+    if (user.role === 'admin' && storeAdmins.length <= 1) {
+      setErrorOnCreate('Impossible de supprimer le dernier administrateur du magasin.');
+      return;
+    }
+    if (deleteConfirmation.trim().toLowerCase() !== user.email.toLowerCase() &&
+      deleteConfirmation.trim() !== 'SUPPRIMER') {
       return;
     }
 
     setActionLoading(user.uid);
     setErrorOnCreate(null);
     try {
-      const currentUser = auth.currentUser;
-      if (!currentUser) throw new Error('Session invalide. Veuillez vous reconnecter.');
-      const token = await currentUser.getIdToken();
-      const response = await fetch('/api/admin/users/delete', {
+      await apiRequest('/admin/users/delete', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({ uid: user.uid }),
       });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(typeof result.error === 'string' ? result.error : 'Impossible de supprimer cet utilisateur.');
-      }
       setUsers((current) => current.filter((profile) => profile.uid !== user.uid));
+      setDeletingUser(null);
+      setDeleteConfirmation('');
       setSuccess(`Utilisateur ${user.email} supprimé.`);
       setTimeout(() => setSuccess(null), 4000);
     } catch (error) {
@@ -657,7 +696,7 @@ export default function Users({ userProfile }: UsersProps) {
               <p className="text-xs font-bold text-slate-700">{permissionMigrationPreview.length} compte(s) sans permissions explicites.</p>
               <div className="flex gap-2">
                 <button type="button" onClick={downloadPermissionMigrationBackup} className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800">Télécharger la sauvegarde JSON</button>
-                <button type="button" onClick={() => void confirmPermissionMigration()} disabled={!permissionMigrationBackupDownloaded || permissionMigrationBusy} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{permissionMigrationBusy ? 'Migration…' : 'Confirmer la migration'}</button>
+                <button type="button" onClick={() => setMigrationConfirmOpen(true)} disabled={!permissionMigrationBackupDownloaded || permissionMigrationBusy} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{permissionMigrationBusy ? 'Migration…' : 'Confirmer la migration'}</button>
               </div>
             </div>
             <ul className="max-h-36 space-y-1 overflow-y-auto text-xs text-slate-600">
@@ -859,37 +898,54 @@ export default function Users({ userProfile }: UsersProps) {
                           </span>
                         ) : (
                         <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleOpenEdit(profile)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-105 hover:bg-indigo-50 hover:text-indigo-650 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border border-slate-100 hover:border-indigo-150 transition-colors"
-                            title="Modifier ce profil"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                            Modifier
-                          </button>
-
-                          <button
-                            onClick={() => handleToggleStatus(profile)}
-                            className={cn(
-                              "inline-flex items-center gap-1 px-2 py-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border transition-colors",
-                              profile.status === 'banned'
-                                ? "bg-emerald-50/50 text-emerald-600 border-emerald-100 hover:bg-emerald-50"
-                                : "bg-slate-100 text-slate-600 border-transparent hover:bg-rose-50 hover:text-rose-600 hover:border-rose-105"
-                            )}
-                            title={profile.status === 'banned' ? 'Débloquer cet utilisateur' : 'Bloquer cet utilisateur'}
-                          >
-                            <Ban className="w-3.5 h-3.5" />
-                            {profile.status === 'banned' ? 'Activer' : 'Bloquer'}
-                          </button>
-
-                          <button
-                            onClick={() => handleDeleteProfileAndAuth(profile)}
-                            disabled={actionLoading === profile.uid}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all border border-transparent hover:border-rose-100"
-                            title="Supprimer définitivement l'utilisateur"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex max-w-[360px] flex-wrap justify-end gap-1.5">
+                            <button
+                              onClick={() => handleOpenEdit(profile)}
+                              className="inline-flex min-h-10 items-center gap-1 px-2.5 py-1.5 bg-slate-105 hover:bg-indigo-50 hover:text-indigo-650 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border border-slate-100 hover:border-indigo-150 transition-colors"
+                              title="Modifier ce profil"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              Modifier
+                            </button>
+                            <button
+                              onClick={() => { setPasswordUser(profile); setNewPassword(''); setConfirmNewPassword(''); setErrorOnCreate(null); }}
+                              className="inline-flex min-h-10 items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border border-indigo-100 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                            >
+                              <Lock className="w-3 h-3" />
+                              Changer le mot de passe
+                            </button>
+                            <button
+                              onClick={() => void sendPasswordResetLink(profile.email)}
+                              disabled={actionLoading === profile.uid}
+                              className="inline-flex min-h-10 items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                              <Mail className="w-3 h-3" />
+                              Envoyer un lien de réinitialisation
+                            </button>
+                            <button
+                              onClick={() => void handleToggleStatus(profile)}
+                              disabled={actionLoading === profile.uid}
+                              className={cn(
+                                "inline-flex min-h-10 items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border transition-colors disabled:opacity-50",
+                                profile.status === 'banned'
+                                  ? "bg-emerald-50/50 text-emerald-600 border-emerald-100 hover:bg-emerald-50"
+                                  : "bg-slate-100 text-slate-600 border-transparent hover:bg-rose-50 hover:text-rose-600 hover:border-rose-105"
+                              )}
+                              title={profile.status === 'banned' ? 'Débloquer cet utilisateur' : 'Bloquer cet utilisateur'}
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                              {profile.status === 'banned' ? 'Débloquer' : 'Bloquer'}
+                            </button>
+                            <button
+                              onClick={() => { setDeletingUser(profile); setDeleteConfirmation(''); setErrorOnCreate(null); }}
+                              disabled={actionLoading === profile.uid}
+                              className="inline-flex min-h-10 items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                              title="Supprimer définitivement l'utilisateur"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Supprimer définitivement
+                            </button>
+                          </div>
                         </div>
                         )}
                       </td>
@@ -901,6 +957,63 @@ export default function Users({ userProfile }: UsersProps) {
           </div>
         )}
       </div>
+
+      {passwordUser && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm" role="presentation">
+          <form onSubmit={handleChangeUserPassword} className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="change-user-password-title">
+            <div>
+              <h2 id="change-user-password-title" className="text-lg font-black text-slate-900">Changer le mot de passe</h2>
+              <p className="mt-1 text-sm text-slate-600">{passwordUser.email}</p>
+            </div>
+            <label className="block space-y-1 text-xs font-bold text-slate-600">Nouveau mot de passe
+              <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={event => setNewPassword(event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600" />
+            </label>
+            <label className="block space-y-1 text-xs font-bold text-slate-600">Confirmer le nouveau mot de passe
+              <input type="password" autoComplete="new-password" minLength={8} required value={confirmNewPassword} onChange={event => setConfirmNewPassword(event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600" />
+            </label>
+            {errorOnCreate && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-700">{errorOnCreate}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => { setPasswordUser(null); setErrorOnCreate(null); }} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700">Annuler</button>
+              <button type="submit" disabled={actionLoading === passwordUser.uid || newPassword.length < 8 || newPassword !== confirmNewPassword} className="min-h-10 rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white disabled:opacity-50">{actionLoading === passwordUser.uid ? 'Modification…' : 'Confirmer'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {deletingUser && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm" role="presentation">
+          <section className="w-full max-w-md space-y-4 rounded-2xl border border-rose-200 bg-white p-6 shadow-2xl" role="alertdialog" aria-modal="true" aria-labelledby="delete-user-title">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-rose-100 p-2 text-rose-700"><AlertCircle className="h-5 w-5" /></div>
+              <div>
+                <h2 id="delete-user-title" className="text-lg font-black text-slate-900">Supprimer définitivement</h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-700">Êtes-vous sûr ? Cette action est définitive : le compte et l'accès de l'utilisateur seront supprimés.</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-600">Saisissez l’email <strong className="text-slate-900">{deletingUser.email}</strong> ou <strong>SUPPRIMER</strong> pour confirmer.</p>
+            <input autoFocus value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} aria-label="Confirmation de suppression" className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-600" />
+            {deletingUser.role === 'admin' && users.filter(profile => profile.role === 'admin' && (profile.ownerId || profile.uid) === (userProfile?.ownerId || userProfile?.uid)).length <= 1 && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-700">Impossible de supprimer le dernier administrateur du magasin.</p>}
+            {errorOnCreate && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-700">{errorOnCreate}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => { setDeletingUser(null); setDeleteConfirmation(''); setErrorOnCreate(null); }} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700">Annuler</button>
+              <button type="button" onClick={() => void handleDeleteProfileAndAuth(deletingUser)} disabled={actionLoading === deletingUser.uid || (deleteConfirmation.trim().toLowerCase() !== deletingUser.email.toLowerCase() && deleteConfirmation.trim() !== 'SUPPRIMER') || (deletingUser.role === 'admin' && users.filter(profile => profile.role === 'admin' && (profile.ownerId || profile.uid) === (userProfile?.ownerId || userProfile?.uid)).length <= 1)} className="min-h-10 rounded-xl bg-rose-700 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{actionLoading === deletingUser.uid ? 'Suppression…' : 'Supprimer définitivement'}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {migrationConfirmOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/60 p-4" role="presentation">
+          <section className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl" role="alertdialog" aria-modal="true">
+            <h2 className="text-lg font-black text-slate-900">Confirmer la migration</h2>
+            <p className="text-sm text-slate-600">Les permissions des comptes prévisualisés seront mises à jour. Une sauvegarde JSON a été téléchargée.</p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setMigrationConfirmOpen(false)} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold">Annuler</button>
+              <button type="button" onClick={() => void confirmPermissionMigration()} className="min-h-10 rounded-xl bg-amber-700 px-4 text-sm font-bold text-white">Confirmer la migration</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Creation Modal (Add User) */}
       {isModalOpen && (

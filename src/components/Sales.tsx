@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, orderBy, limit, doc, getDoc, where, deleteDoc, setDoc, updateDoc, runTransaction, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { apiFetch } from '../lib/api';
 import { Sale, Invoice, UserProfile, Product } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, Calendar, User, ShoppingBag, Eye, X, Printer, Download, TrendingUp, Receipt, AlertCircle, CheckCircle2, Clock, Trash2, Shield, EyeOff, Package } from 'lucide-react';
@@ -223,7 +224,7 @@ export default function Sales({ userProfile }: SalesProps) {
         getDoc(doc(db, 'settings', ownerId))
       ]);
       const storeSettings = settingsSnap.exists() ? settingsSnap.data() : {};
-      const response = await fetch('/api/invoices/pdf', {
+      const response = await apiFetch('/invoices/pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
