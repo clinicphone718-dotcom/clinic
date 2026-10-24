@@ -106,6 +106,17 @@ Cette commande n’est pas lancée par l’application ni par ce guide. Vérifie
 6. Ajoutez le domaine Netlify généré et le domaine personnalisé dans **Authentication > Authorized domains** Firebase.
 7. Restreignez la clé API Web à ces domaines, notamment les sous-domaines nécessaires au site.
 
+### Relier le front Netlify à l’API Render
+
+Le front statique ne peut pas exécuter les routes Express `/api/*`. Pour les fonctionnalités serveur (gestion avancée des comptes, génération PDF et envoi OTP), déployez d’abord le service complet sur Render en suivant l’étape 4.
+
+1. Copiez l’URL HTTPS publique du service Render.
+2. Dans `public/_redirects`, remplacez `https://REMPLACER-PAR-LE-SERVICE.onrender.com` par cette URL, puis décommentez la règle `/api/*` (retirez le `#` initial). Gardez cette règle avant `/* /index.html 200`.
+3. Redéployez le site Netlify afin que le fichier `_redirects` actualisé soit publié.
+4. Vérifiez une requête API depuis le domaine Netlify et confirmez que `/healthz` répond directement sur le domaine Render.
+
+En variante, déployez le serveur Express et le front sur le même service Render : la commande `npm start` sert alors `dist` et `/api` sur une origine commune, sans proxy Netlify.
+
 ## 7. Contrôles après publication
 
 - Vérifiez la page de connexion et l’accès d’un compte de test Casier, Technicien et admin.
