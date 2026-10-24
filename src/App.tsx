@@ -228,11 +228,11 @@ function Sidebar({
       )}
       
       <aside className={cn(
-        "fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-100 z-50 transition-transform duration-300 lg:translate-x-0 shadow-sm shadow-slate-100/40",
+        "fixed inset-y-0 left-0 z-50 w-[min(19rem,calc(100vw-2rem))] border-r border-slate-200/70 bg-white/95 shadow-xl shadow-slate-900/5 backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 lg:w-64 lg:shadow-sm",
         isOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         <div className="h-full flex flex-col">
-          <div className="p-6 flex items-center justify-between border-b border-slate-50">
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-5">
             <h1 className="text-2xl font-black flex flex-col leading-none font-display">
               <span className="flex items-center gap-2 tracking-tight">
                 {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-7 w-7 rounded-lg object-cover" /> : (
@@ -360,7 +360,16 @@ function Sidebar({
             )}
           </div>
 
-          <div className="p-4 border-t border-slate-100 bg-slate-50/50">
+          <div className="border-t border-slate-100 bg-white/80 p-4">
+            <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-indigo-100 text-sm font-black text-indigo-700">
+                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : (userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-bold text-slate-800">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
+                <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
+              </div>
+            </div>
             <button
               onClick={async () => {
                 localStorage.clear();
@@ -818,7 +827,7 @@ export default function App() {
               </div>
             </header>
  
-            <div className="p-4 lg:p-8 flex-1">
+            <div className="mx-auto w-full max-w-[1800px] flex-1 p-4 lg:p-8">
               <Routes>
                 <Route path="/" element={hasMenuAccess(userProfile, 'dashboard') ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />

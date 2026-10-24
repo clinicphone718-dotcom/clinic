@@ -1,10 +1,16 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --font-display: "Outfit", sans-serif;
+  --font-display: "Outfit Variable", Outfit, sans-serif;
+  --color-brand: var(--brand-primary, #4f46e5);
+  --color-indigo-600: var(--brand-primary, #4f46e5);
+  --color-indigo-700: color-mix(in srgb, var(--brand-primary, #4f46e5) 82%, black);
+  --radius-card: 1.25rem;
+  --radius-control: 0.75rem;
+  --shadow-card: 0 12px 36px -24px rgb(15 23 42 / 24%), 0 1px 3px rgb(15 23 42 / 5%);
+  --shadow-card-hover: 0 20px 42px -24px rgb(15 23 42 / 30%), 0 4px 10px rgb(15 23 42 / 5%);
 }
 
 @font-face {
@@ -23,11 +29,59 @@ html {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
 }
 
 body {
-  background-color: #f8fafc; /* bg-slate-50: modern, cleaner look than standard gray-100 */
-  color: #0f172a; /* text-slate-900 */
+  min-width: 320px;
+  overflow-x: hidden;
+  background-color: #f6f8fc;
+  color: #0f172a;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+button, a, input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--brand-primary, #4f46e5) 52%, white);
+  outline-offset: 2px;
+}
+
+input, select, textarea {
+  accent-color: var(--brand-primary, #4f46e5);
+}
+
+input[type="number"], .font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+tbody tr {
+  transition: background-color 140ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Custom scrollbars for a premium feel */
@@ -51,12 +105,13 @@ body {
 
 /* Custom shadow animations */
 .premium-shadow {
-  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.03), 0 1px 2px -1px rgba(15, 23, 42, 0.03), 0 4px 6px -1px rgba(15, 23, 42, 0.02);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 1.25rem;
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 180ms ease, transform 180ms ease;
 }
 
 .premium-shadow:hover {
-  box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.05), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
+  box-shadow: var(--shadow-card-hover);
 }
 
 @media print {
