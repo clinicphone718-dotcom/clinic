@@ -113,6 +113,10 @@ export interface StartupConfig {
   volume: number;
   loop: boolean;
   background: boolean;
+  welcomeTitle?: string;
+  welcomeText?: string;
+  welcomeSource?: string;
+  audioUrl?: string;
   updatedAt?: unknown;
 }
 

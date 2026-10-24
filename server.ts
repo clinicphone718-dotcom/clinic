@@ -261,29 +261,70 @@ async function startServer() {
   });
 
   app.post("/api/admin/users/delete", requireAuth, requireAdmin, async (req, res) => {
+    let profileRemoved = false;
     try {
       const { uid } = req.body;
       if (typeof uid !== "string" || !uid) {
         return res.status(400).json({ error: "UID requis." });
       }
+      if (uid === res.locals.authUid) {
+        return res.status(400).json({ error: "Un administrateur ne peut pas supprimer son propre compte." });
+      }
       if (!(await canManageTarget(res, uid))) {
         return res.status(403).json({ error: "Accès refusé." });
       }
 
-      // Delete from Auth
+      const targetRef = adminDb.collection("users").doc(uid);
+      await adminDb.runTransaction(async (transaction) => {
+        const targetProfile = await transaction.get(targetRef);
+        if (!targetProfile.exists) {
+          throw Object.assign(new Error("Profil utilisateur introuvable."), { status: 404 });
+        }
+
+        const targetData = targetProfile.data()!;
+        if (targetData.role === "admin") {
+          const administrators = await transaction.get(
+            adminDb.collection("users").where("role", "==", "admin")
+          );
+          const storeOwnerId = String(targetData.ownerId || uid);
+          const remainingAdmins = administrators.docs.filter((admin) =>
+            String(admin.data().ownerId || admin.id) === storeOwnerId && admin.id !== uid
+          );
+          if (!remainingAdmins.length) {
+            throw Object.assign(new Error("Impossible de supprimer le dernier administrateur du magasin."), { status: 409 });
+          }
+        }
+
+        transaction.delete(targetRef);
+      });
+      profileRemoved = true;
+
       try {
         await adminAuth.deleteUser(uid);
       } catch (authErr) {
-        console.warn("Auth user might not exist or already deleted:", authErr);
+        if (
+          typeof authErr === "object" &&
+          authErr !== null &&
+          "code" in authErr &&
+          authErr.code === "auth/user-not-found"
+        ) {
+          // Remove a stale Firestore profile when its Auth account is already absent.
+        } else {
+          throw authErr;
+        }
       }
 
-      // Delete from Firestore
-      await adminDb.collection("users").doc(uid).delete();
-
       res.json({ success: true });
-    } catch (err: any) {
-      console.error("Error deleting user:", err);
-      res.status(500).json({ error: err.message });
+    } catch (error) {
+      console.error("Unable to delete the requested user.");
+      const status = typeof error === "object" && error !== null && "status" in error &&
+        typeof error.status === "number" ? error.status : 500;
+      const message = profileRemoved
+        ? "Profil retiré, mais la suppression du compte Firebase Authentication a échoué. Contactez l’administrateur."
+        : status < 500 && error instanceof Error
+          ? error.message
+          : "Impossible de supprimer cet utilisateur.";
+      res.status(status).json({ error: message });
     }
   });
 

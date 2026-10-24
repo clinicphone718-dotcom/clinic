@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, query, where, deleteDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { db, auth } from '../firebase';
+import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { APP_NAME } from '../config/brand';
 import { StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType, hasMenuAccess } from '../App';
-import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck } from 'lucide-react';
+import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck, Music2, Upload } from 'lucide-react';
 import { cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import { can } from '../lib/permissions';
+import { useStartup } from './StartupProvider';
+import { adhkarLibrary } from '../data/adhkar';
+import { verses } from '../data/verses';
+import { isDirectAudioUrl } from '../lib/startup';
 
 interface SettingsProps {
   userProfile: UserProfile | null;
@@ -175,6 +180,106 @@ export default function Settings({ userProfile }: SettingsProps) {
   const [success, setSuccess] = useState<string | null>(null);
 
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
+  const { config: startupConfig, canManage: canManageStartup } = useStartup();
+  const [startupEnabled, setStartupEnabled] = useState(startupConfig.enabled);
+  const [welcomeTitle, setWelcomeTitle] = useState(startupConfig.welcomeTitle || verses[0].title);
+  const [welcomeText, setWelcomeText] = useState(startupConfig.welcomeText || verses[0].text);
+  const [welcomeSource, setWelcomeSource] = useState(startupConfig.welcomeSource || verses[0].source);
+  const [startupAudioUrl, setStartupAudioUrl] = useState(startupConfig.audioUrl || '');
+  const [startupSaving, setStartupSaving] = useState(false);
+  const [startupMessage, setStartupMessage] = useState('');
+  const [audioUploading, setAudioUploading] = useState(false);
+  const audioFileInput = React.useRef<HTMLInputElement>(null);
+  const welcomeChoices = [
+    ...verses.map((verse) => ({ id: `verse:${verse.title}`, ...verse })),
+    ...adhkarLibrary.map((adhkar) => ({ id: `dhikr:${adhkar.section}:${adhkar.title}`, ...adhkar })),
+  ];
+  const selectedWelcomeChoice = welcomeChoices.find(
+    (choice) => choice.title === welcomeTitle && choice.text === welcomeText,
+  )?.id || 'custom';
+
+  useEffect(() => {
+    setStartupEnabled(startupConfig.enabled);
+    setWelcomeTitle(startupConfig.welcomeTitle || verses[0].title);
+    setWelcomeText(startupConfig.welcomeText || verses[0].text);
+    setWelcomeSource(startupConfig.welcomeSource || verses[0].source);
+    setStartupAudioUrl(startupConfig.audioUrl || '');
+  }, [
+    startupConfig.enabled,
+    startupConfig.welcomeTitle,
+    startupConfig.welcomeText,
+    startupConfig.welcomeSource,
+    startupConfig.audioUrl,
+  ]);
+
+  const saveStartupSettings = async () => {
+    if (!ownerId) {
+      setStartupMessage('Propriétaire du magasin introuvable.');
+      return;
+    }
+    if (!welcomeTitle.trim() || !welcomeText.trim()) {
+      setStartupMessage('Le titre et le texte sont obligatoires.');
+      return;
+    }
+    if (startupAudioUrl && !isDirectAudioUrl(startupAudioUrl)) {
+      setStartupMessage('Utilisez un lien HTTPS direct vers un fichier .mp3 ou .m4a.');
+      return;
+    }
+
+    setStartupSaving(true);
+    setStartupMessage('');
+    try {
+      await setDoc(doc(db, 'startup_config', ownerId), {
+        ownerId,
+        ...startupConfig,
+        enabled: startupEnabled,
+        welcomeTitle: welcomeTitle.trim(),
+        welcomeText: welcomeText.trim(),
+        welcomeSource: welcomeSource.trim(),
+        audioUrl: startupAudioUrl.trim(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      setStartupMessage('Réglages Coran & Adhkar enregistrés.');
+    } catch (saveError) {
+      console.error('Unable to save startup settings:', saveError);
+      setStartupMessage('Impossible d’enregistrer les réglages. Vérifiez les permissions Firestore.');
+    } finally {
+      setStartupSaving(false);
+    }
+  };
+
+  const uploadStartupAudio = async (file?: File) => {
+    if (!file) return;
+    if (!ownerId) {
+      setStartupMessage('Propriétaire du magasin introuvable.');
+      return;
+    }
+    if (!/\.(mp3|m4a)$/i.test(file.name) || (file.type && !['audio/mpeg', 'audio/mp4', 'audio/x-m4a'].includes(file.type))) {
+      setStartupMessage('Choisissez un fichier audio .mp3 ou .m4a.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setStartupMessage('Le fichier audio ne doit pas dépasser 20 Mo.');
+      return;
+    }
+
+    setAudioUploading(true);
+    setStartupMessage('');
+    try {
+      const objectName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const audioRef = ref(getStorage(), `startup-audio/${ownerId}/${objectName}`);
+      const uploaded = await uploadBytes(audioRef, file, { contentType: file.type || 'audio/mpeg' });
+      const downloadUrl = await getDownloadURL(uploaded.ref);
+      setStartupAudioUrl(downloadUrl);
+      setStartupMessage('Fichier envoyé. Enregistrez les réglages pour l’activer.');
+    } catch (uploadError) {
+      console.error('Unable to upload startup audio:', uploadError);
+      setStartupMessage('Impossible de téléverser le fichier. Vérifiez que Firebase Storage est activé et autorisé.');
+    } finally {
+      setAudioUploading(false);
+      if (audioFileInput.current) audioFileInput.current.value = '';
+    }
+  };
 
   if (userProfile && !hasMenuAccess(userProfile, 'settings')) {
     // L'utilisateur n'a pas accès aux paramètres du magasin,
@@ -1016,6 +1121,122 @@ export default function Settings({ userProfile }: SettingsProps) {
           </div>
         </div>
 
+      )}
+
+      {canManageStartup && (
+        <section className="space-y-4 rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600"><Music2 className="h-5 w-5" /></div>
+            <div>
+              <h2 className="text-sm font-bold text-slate-800">Coran &amp; Adhkar</h2>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Écran d’accueil et récitation audio</p>
+            </div>
+            <label className="ml-auto flex items-center gap-2 text-xs font-bold text-slate-700">
+              <input
+                type="checkbox"
+                checked={startupEnabled}
+                onChange={(event) => setStartupEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              Activer
+            </label>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1 text-xs font-bold text-slate-600">
+              Choisir une āya ou un adhkar
+              <select
+                value={selectedWelcomeChoice}
+                onChange={(event) => {
+                  const choice = welcomeChoices.find((item) => item.id === event.target.value);
+                  if (!choice) return;
+                  setWelcomeTitle(choice.title);
+                  setWelcomeText(choice.text);
+                  setWelcomeSource(choice.source);
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-medium"
+              >
+                <option value="custom">Texte personnalisé</option>
+                {welcomeChoices.map((choice) => (
+                  <option key={choice.id} value={choice.id}>{choice.title}</option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs font-bold text-slate-600">
+              Titre
+              <input
+                value={welcomeTitle}
+                onChange={(event) => setWelcomeTitle(event.target.value)}
+                maxLength={200}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
+              />
+            </label>
+          </div>
+
+          <label className="block space-y-1 text-xs font-bold text-slate-600">
+            Texte affiché
+            <textarea
+              value={welcomeText}
+              onChange={(event) => setWelcomeText(event.target.value)}
+              maxLength={5000}
+              dir="rtl"
+              lang="ar"
+              rows={3}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-right font-arabic text-lg font-medium"
+            />
+          </label>
+          <label className="block space-y-1 text-xs font-bold text-slate-600">
+            Source (facultative)
+            <input
+              value={welcomeSource}
+              onChange={(event) => setWelcomeSource(event.target.value)}
+              maxLength={500}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
+            />
+          </label>
+
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+            <label className="space-y-1 text-xs font-bold text-slate-600">
+              رابط URL للمقطع الصوتي
+              <input
+                type="url"
+                value={startupAudioUrl}
+                onChange={(event) => setStartupAudioUrl(event.target.value)}
+                placeholder="https://…/recitation.mp3"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
+              />
+            </label>
+            <div className="flex items-end">
+              <input
+                ref={audioFileInput}
+                type="file"
+                accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a"
+                onChange={(event) => void uploadStartupAudio(event.target.files?.[0])}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => audioFileInput.current?.click()}
+                disabled={audioUploading}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 px-4 py-2.5 text-xs font-bold text-indigo-700 disabled:opacity-50 sm:w-auto"
+              >
+                <Upload className="h-4 w-4" />
+                {audioUploading ? 'Envoi…' : 'رفع ملف صوتي'}
+              </button>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-500">Lien direct HTTPS en .mp3 ou .m4a. L’audio ne démarre qu’après le bouton « دخول » de l’écran d’accueil.</p>
+          {startupMessage && <p role="status" className="text-xs font-semibold text-indigo-700">{startupMessage}</p>}
+          <button
+            type="button"
+            onClick={() => void saveStartupSettings()}
+            disabled={startupSaving || audioUploading}
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
+          >
+            <Save className="h-4 w-4" />
+            {startupSaving ? 'Enregistrement…' : 'Enregistrer Coran & Adhkar'}
+          </button>
+        </section>
       )}
 
       {/* Modal Journal d'activité (affichage en ligne, style fichier log) */}

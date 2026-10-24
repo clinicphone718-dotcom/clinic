@@ -23,8 +23,7 @@ import {
   CheckCircle,
   Wifi,
   WifiOff,
-  Wrench,
-  BookOpen
+  Wrench
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { UserProfile, Note } from './types';
@@ -47,8 +46,7 @@ import UsersManager from './components/Users';
 import Notes from './components/Notes';
 import Repairs from './components/Repairs';
 import Parts from './components/Parts';
-import StartupAdmin from './components/StartupAdmin';
-import { StartupMiniPlayer, StartupProvider } from './components/StartupProvider';
+import { StartupProvider } from './components/StartupProvider';
 
 // Error Handling
 export enum OperationType {
@@ -162,7 +160,6 @@ function Sidebar({
     { id: 'pieces', name: 'Pièces Détachées', path: '/parts', icon: Package },
     { id: 'clients', name: 'Clients', path: '/clients', icon: Users },
     { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
-    { id: 'startup', name: 'Coran & Adhkar', path: '/startup', icon: BookOpen, adminOnly: true },
     { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
     { id: 'sales', name: 'Historique', path: '/sales', icon: History },
     { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
@@ -766,7 +763,6 @@ export default function App() {
               </div>
 
               <div className="flex-1"></div>
-              {userProfile && <StartupMiniPlayer />}
               <div className="flex items-center gap-3">
                 <span className="text-xs text-slate-500 font-semibold hidden sm:block bg-slate-100 px-3 py-1 rounded-full">{user.email}</span>
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center text-white font-black font-display text-sm shadow-md shadow-indigo-600/15">
@@ -787,7 +783,7 @@ export default function App() {
                 <Route path="/parts" element={hasMenuAccess(userProfile, 'pieces') ? <Parts userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/notes" element={hasMenuAccess(userProfile, 'notes') ? <Notes userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
-                <Route path="/startup" element={userProfile?.role === 'admin' && (userProfile.ownerId || userProfile.uid) === userProfile.uid ? <StartupAdmin userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/startup" element={<Navigate to="/settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
                 <Route path="/settings" element={<Settings userProfile={userProfile} />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

@@ -575,16 +575,40 @@ export default function Users({ userProfile }: UsersProps) {
   };
 
   const handleDeleteProfileAndAuth = async (user: UserProfile) => {
-    if (!confirm(`Retirer l’accès de ${user.email} ? Son compte Firebase Authentication ne sera pas supprimé, mais son profil sera marqué comme banni.`)) {
+    if (user.uid === userProfile?.uid) {
+      setErrorOnCreate('Vous ne pouvez pas supprimer votre propre compte administrateur.');
+      return;
+    }
+    if (!window.confirm(`Supprimer définitivement ${user.email} de Firebase Authentication et retirer son profil du magasin ?`)) {
       return;
     }
 
+    setActionLoading(user.uid);
+    setErrorOnCreate(null);
     try {
-      await updateDoc(doc(db, 'users', user.uid), { status: 'banned' });
-      setSuccess(`Accès de ${user.email} retiré. Le compte Firebase Authentication subsiste.`);
-      setTimeout(() => setSuccess(null), 3500);
-    } catch (err: any) {
-      alert(err.message || "Erreur lors de la suppression.");
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error('Session invalide. Veuillez vous reconnecter.');
+      const token = await currentUser.getIdToken();
+      const response = await fetch('/api/admin/users/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ uid: user.uid }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result.error === 'string' ? result.error : 'Impossible de supprimer cet utilisateur.');
+      }
+      setUsers((current) => current.filter((profile) => profile.uid !== user.uid));
+      setSuccess(`Utilisateur ${user.email} supprimé.`);
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (error) {
+      console.error('Unable to delete user profile.');
+      setErrorOnCreate(error instanceof Error ? error.message : 'Impossible de supprimer cet utilisateur.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -647,6 +671,11 @@ export default function Users({ userProfile }: UsersProps) {
         <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl text-emerald-800 text-xs font-bold leading-relaxed flex items-center gap-2.5 animate-in fade-in duration-300">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 animate-bounce" />
           {success}
+        </div>
+      )}
+      {errorOnCreate && !isModalOpen && (
+        <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-xs font-bold text-rose-700">
+          {errorOnCreate}
         </div>
       )}
 
@@ -855,6 +884,7 @@ export default function Users({ userProfile }: UsersProps) {
 
                           <button
                             onClick={() => handleDeleteProfileAndAuth(profile)}
+                            disabled={actionLoading === profile.uid}
                             className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all border border-transparent hover:border-rose-100"
                             title="Supprimer définitivement l'utilisateur"
                           >
