@@ -10,6 +10,7 @@ import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download
 import { cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import { can } from '../lib/permissions';
+import { normalizeFinancialSettings } from '../lib/financial';
 import { useStartup } from './StartupProvider';
 import { adhkarLibrary } from '../data/adhkar';
 import { verses } from '../data/verses';
@@ -869,14 +870,15 @@ export default function Settings({
     const unsubscribeStore = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data() as StoreSettings;
-        setStoreSettings({ ...data, id: snapshot.id });
+        const financialSettings = normalizeFinancialSettings(data);
+        setStoreSettings({ ...data, ...financialSettings, id: snapshot.id });
         setStoreFormData({
           storeName: data.storeName || '',
           currency: data.currency || '',
           address: data.address || '',
           phone: data.phone || '',
-          tva: data.tva !== undefined ? data.tva : 0,
-          tvaEnabled: data.tvaEnabled === true,
+          tva: financialSettings.tva || 0,
+          tvaEnabled: financialSettings.tvaEnabled === true,
           deleteCode: data.deleteCode || '',
           minStockAlert: data.minStockAlert !== undefined ? data.minStockAlert : 5
         });
@@ -915,7 +917,10 @@ export default function Settings({
     e.preventDefault();
     if (!ownerId) return;
     try {
-      await setDoc(doc(db, 'settings', ownerId), storeFormData);
+      await setDoc(doc(db, 'settings', ownerId), {
+        ...storeFormData,
+        tvaOptIn: storeFormData.tvaEnabled,
+      });
       setSuccess('Paramètres du magasin enregistrés avec succès !');
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {

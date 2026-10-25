@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp, runTransaction, getDoc, getDocs, where, getDocFromServer } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
-import { computeTotals } from '../lib/financial';
+import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { Product, Client, SaleItem, Sale, Invoice, Category, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, ShoppingCart, Trash2, Plus, Minus, User, CreditCard, CheckCircle, AlertCircle, Printer, X, FileText, Barcode, Filter, Tag, Coins, Percent, TrendingUp, UserCheck, Flame } from 'lucide-react';
@@ -116,7 +116,8 @@ export default function POS({ userProfile }: POSProps) {
     });
     const unsubscribeStore = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
-        setStoreSettings(snapshot.data() as StoreSettings);
+        const data = snapshot.data() as StoreSettings;
+        setStoreSettings({ ...data, ...normalizeFinancialSettings(data) });
       }
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, `settings/${ownerId}`);
@@ -513,7 +514,7 @@ export default function POS({ userProfile }: POSProps) {
       const profit = (item.price - buyP) * item.quantity;
       return sum + profit;
     }, 0);
-    return Math.max(0, Math.round((rawProfit - discount) * 1000) / 1000);
+    return Math.round((rawProfit - discount + Number.EPSILON) * 1000) / 1000;
   }, [cart, products, discount, canViewBuyPrice, canViewMargin]);
 
   const downloadPDF = async (invoice: Invoice) => {
@@ -584,6 +585,7 @@ export default function POS({ userProfile }: POSProps) {
 
     try {
       let generatedInvoice: Invoice | null = null;
+      let committedSaleId: string | null = null;
 
       // Vérifie une VRAIE connexion serveur avant la vente. getDocFromServer force une
       // lecture réseau : hors-ligne (ou faux navigator.onLine), elle échoue → on bloque net,
@@ -667,6 +669,7 @@ export default function POS({ userProfile }: POSProps) {
           // 3. ALL WRITES LAST
           const saleRef = doc(collection(db, 'sales'));
           const invoiceRef = doc(collection(db, 'invoices'));
+          committedSaleId = saleRef.id;
           transaction.set(counterRef, { lastNum: nextNum }, { merge: true });
 
           for (const update of stockUpdates) {
@@ -746,6 +749,15 @@ export default function POS({ userProfile }: POSProps) {
           
           generatedInvoice = invoiceData as any;
         });
+      }
+
+      if (committedSaleId) {
+        try {
+          await apiFetch(`/financial/sales/${encodeURIComponent(committedSaleId)}/costs`, { method: 'POST' });
+        } catch (costError) {
+          console.error('Sale purchase-cost snapshot failed after sale commit.');
+          setError(`Vente enregistrée, mais le coût d'achat n'a pas pu être figé. ${costError instanceof Error ? costError.message : ''}`);
+        }
       }
 
       setSaleSuccess(isCredit ? 'Vente enregistrée à crédit !' : 'Vente validée avec succès !');
@@ -1073,6 +1085,9 @@ export default function POS({ userProfile }: POSProps) {
                           <p className="font-extrabold text-slate-800 text-xs sm:text-[13px] leading-snug break-words line-clamp-2" title={item.name}>
                             {item.name}
                           </p>
+                          {canViewMargin && (products.find(product => product.id === item.productId)?.buyPrice || 0) > item.price && (
+                            <span className="mt-1 inline-flex rounded-full bg-rose-100 px-2 py-0.5 text-[9px] font-black uppercase text-rose-700">Vendu à perte</span>
+                          )}
                         </td>
                         <td className="py-3 px-2 text-center">
                           <div className="inline-flex items-center gap-1.5 bg-slate-100/80 border border-slate-200/60 rounded-lg p-0.5 shadow-3xs">
@@ -1259,8 +1274,14 @@ export default function POS({ userProfile }: POSProps) {
             {canViewMargin && <div className="bg-emerald-50/50 border border-emerald-200/60 rounded-lg p-2 flex items-center justify-between shadow-3xs">
               <div className="min-w-0">
                 <span className="text-[8px] font-black text-emerald-800 uppercase tracking-wider block">Bénéfice estimé</span>
-                <span className="text-xs sm:text-sm font-black text-emerald-700 font-mono block leading-none mt-1 truncate">
-                  {estimatedBenefit.toFixed(3)} <span className="text-[8px] font-bold text-emerald-650">{currency}</span>
+                <span className={cn(
+                  "text-xs sm:text-sm font-black font-mono block leading-none mt-1 truncate",
+                  estimatedBenefit < 0 ? "text-rose-700" : "text-emerald-700",
+                )}>
+                  {estimatedBenefit.toFixed(3)} <span className={cn(
+                    "text-[8px] font-bold",
+                    estimatedBenefit < 0 ? "text-rose-650" : "text-emerald-650",
+                  )}>{currency}</span>
                 </span>
               </div>
               <div className="w-6 h-6 rounded bg-emerald-100 text-emerald-650 flex items-center justify-center shrink-0 ml-1">

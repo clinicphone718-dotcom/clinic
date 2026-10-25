@@ -36,6 +36,7 @@ import { isSameDay } from 'date-fns';
 import { cn } from '../lib/utils';
 import SalesVolumeChart from './SalesVolumeChart';
 import { can } from '../lib/permissions';
+import { computeSaleProfit, computeTotals, normalizeFinancialSettings, type SaleCostLine } from '../lib/financial';
 
 // Helper component for printing high-quality A4 reports
 interface PrintableReportProps {
@@ -108,7 +109,7 @@ function PrintableReport({ activeModal, records, storeSettings, currency, canVie
             {activeModal === 'profit' && (
               <>
                 <th className="py-2 px-3 text-right border border-stone-200">Chiffre d'Affaires</th>
-                <th className="py-2 px-3 text-right border border-stone-200">Coût estimé articles</th>
+                <th className="py-2 px-3 text-right border border-stone-200">Coûts et dépenses</th>
                 <th className="py-2 px-3 text-center border border-stone-200">Marge Ratio (%)</th>
                 <th className="py-2 px-3 text-right border border-stone-200 bg-stone-100 font-bold">Bénéfice Net</th>
               </>
@@ -170,11 +171,11 @@ function PrintableReport({ activeModal, records, storeSettings, currency, canVie
                 {activeModal === 'profit' && (
                   <>
                     <td className="py-2 px-3 text-right border border-stone-200 font-mono">{rec.revenue.toFixed(3)} {currency}</td>
-                    <td className="py-2 px-3 text-right border border-stone-200 font-mono">{(rec.revenue - rec.profit).toFixed(3)} {currency}</td>
+                    <td className="py-2 px-3 text-right border border-stone-200 font-mono">{rec.profitComplete ? `${(rec.revenue - rec.profit).toFixed(3)} ${currency}` : 'Coûts manquants'}</td>
                     <td className="py-2 px-3 text-center border border-stone-200 font-mono font-bold">
-                      {rec.revenue > 0 ? ((rec.profit / rec.revenue) * 100).toFixed(1) + '%' : '0.0%'}
+                      {rec.profitComplete && rec.revenue > 0 ? ((rec.profit / rec.revenue) * 100).toFixed(1) + '%' : '—'}
                     </td>
-                    <td className="py-2 px-3 text-right border border-stone-200 bg-stone-50 font-mono font-bold">{rec.profit.toFixed(3)} {currency}</td>
+                    <td className="py-2 px-3 text-right border border-stone-200 bg-stone-50 font-mono font-bold">{rec.profitComplete ? `${rec.profit.toFixed(3)} ${currency}` : '—'}</td>
                   </>
                 )}
                 {activeModal === 'debt' && (
@@ -214,6 +215,10 @@ interface DashboardProps {
 export default function Dashboard({ userProfile }: DashboardProps) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [saleCostSnapshots, setSaleCostSnapshots] = useState<Record<string, SaleCostLine[]>>({});
+  const [repairs, setRepairs] = useState<any[]>([]);
+  const [repairCostSnapshots, setRepairCostSnapshots] = useState<Record<string, Record<string, number>>>({});
+  const [expenses, setExpenses] = useState<any[]>([]);
   const productCostsRef = useRef<Record<string, number>>({});
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -221,7 +226,8 @@ export default function Dashboard({ userProfile }: DashboardProps) {
   // States for detailed history modal
   const [activeModal, setActiveModal] = useState<'revenue' | 'profit' | 'debt' | 'sales' | 'expenses' | 'stock' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [periodFilter, setPeriodFilter] = useState<'7' | '30' | '90' | '100' | 'all' | 'custom'>('100');
+  const [periodFilter, setPeriodFilter] = useState<'today' | '7' | '30' | '90' | 'year' | 'all' | 'custom'>('30');
+  const [financialPeriod, setFinancialPeriod] = useState<'today' | '7' | '30' | '90' | 'year' | 'all'>('today');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [sortField, setSortField] = useState<'date' | 'value'>('date');
@@ -304,9 +310,41 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       }, (error) => handleFirestoreError(error, OperationType.LIST, 'supplies'))
       : () => setSupplies([]);
 
+    const unsubscribeSaleCosts = canViewMargin
+      ? onSnapshot(query(collection(db, 'sale_costs'), where('ownerId', '==', ownerId)), snapshot => {
+        setSaleCostSnapshots(Object.fromEntries(snapshot.docs.map(item => [
+          item.id,
+          (item.data().items || []) as SaleCostLine[],
+        ])));
+      }, error => handleFirestoreError(error, OperationType.LIST, 'sale_costs'))
+      : () => setSaleCostSnapshots({});
+
+    const unsubscribeRepairs = isAdmin
+      ? onSnapshot(query(collection(db, 'repairs'), where('ownerId', '==', ownerId)), snapshot => {
+        setRepairs(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      }, error => handleFirestoreError(error, OperationType.LIST, 'repairs'))
+      : () => setRepairs([]);
+
+    const unsubscribeRepairCosts = canViewMargin
+      ? onSnapshot(query(collection(db, 'repair_costs'), where('ownerId', '==', ownerId)), snapshot => {
+        setRepairCostSnapshots(Object.fromEntries(snapshot.docs.map(item => [
+          item.id,
+          Object.fromEntries(((item.data().parts || []) as Array<{ productId: string; unitBuyPrice: number }>)
+            .map(part => [part.productId, Number(part.unitBuyPrice) || 0])),
+        ])));
+      }, error => handleFirestoreError(error, OperationType.LIST, 'repair_costs'))
+      : () => setRepairCostSnapshots({});
+
+    const unsubscribeExpenses = isAdmin
+      ? onSnapshot(query(collection(db, 'expenses'), where('ownerId', '==', ownerId)), snapshot => {
+        setExpenses(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      }, error => handleFirestoreError(error, OperationType.LIST, 'expenses'))
+      : () => setExpenses([]);
+
     const unsubscribeStore = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
-        setStoreSettings(snapshot.data() as StoreSettings);
+        const data = snapshot.data() as StoreSettings;
+        setStoreSettings({ ...data, ...normalizeFinancialSettings(data) });
       }
       setLoading(false);
     }, (error) => handleFirestoreError(error, OperationType.GET, `settings/${ownerId}`));
@@ -316,9 +354,13 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       unsubscribeProds();
       unsubscribeCosts();
       unsubscribeSupplies();
+      unsubscribeSaleCosts();
+      unsubscribeRepairs();
+      unsubscribeRepairCosts();
+      unsubscribeExpenses();
       unsubscribeStore();
     };
-  }, [ownerId, isAdmin, canViewBuyPrice]);
+  }, [ownerId, isAdmin, canViewBuyPrice, canViewMargin]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -368,40 +410,45 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     });
 
     // Today's Supplies / Expenses
-    const getSupplyDate = (sup: any) => {
-      if (!sup.date) return new Date();
-      if (typeof sup.date.toDate === 'function') return sup.date.toDate();
-      if (sup.date instanceof Date) return sup.date;
-      return new Date(sup.date);
-    };
-
-    const todaySupplies = supplies.filter(sup => {
-      const supDate = getSupplyDate(sup);
-      return isSameDayRobust(supDate, today);
-    });
-
-    const dailyExpenses = todaySupplies.reduce((sum, sup) => sum + (sup.totalCost || 0), 0);
+    const getDate = (value: any) => value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value || 0);
+    const todayExpenses = expenses.filter(expense => isSameDayRobust(getDate(expense.date), today));
+    const dailyExpenses = todayExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
 
     // 2. Chiffre d'affaires
-    const dailyRevenue = todaySales.reduce((sum, s) => sum + s.total, 0);
+    const dailyRevenue = todaySales.reduce((sum, sale) =>
+      sum + computeSaleProfit(sale, saleCostSnapshots[sale.id]).revenueExcludingTax, 0);
 
     // 3. Paid & Debt
     const dailyPaid = todaySales.reduce((sum, s) => sum + s.paid, 0);
     const dailyDebt = todaySales.reduce((sum, s) => sum + s.debt, 0);
 
     // 4. Benefice Net
-    let totalCostOfGoodsSold = 0;
-    if (canViewBuyPrice) {
-      todaySales.forEach(sale => {
-        sale.items.forEach(item => {
-          const itemBuyPrice = productBuyPriceMap[item.productId] !== undefined
-            ? productBuyPriceMap[item.productId]
-            : (item.price * 0.7);
-          totalCostOfGoodsSold += itemBuyPrice * item.quantity;
-        });
+    const saleMargins = todaySales.map(sale => computeSaleProfit(sale, saleCostSnapshots[sale.id]));
+    const todayRepairs = isAdmin ? repairs.filter(repair =>
+      repair.status === 'livre' && isSameDayRobust(getDate(repair.deliveredAt || repair.date), today)
+    ) : [];
+    let repairProfit = 0;
+    let repairCostsComplete = true;
+    todayRepairs.forEach(repair => {
+      const costs = repairCostSnapshots[repair.id] || {};
+      let partCost = 0;
+      (repair.parts || []).forEach((part: any) => {
+        const unitBuyPrice = costs[part.productId] ?? part.unitBuyPrice;
+        if (typeof unitBuyPrice !== 'number' || !Number.isFinite(unitBuyPrice)) repairCostsComplete = false;
+        else partCost += unitBuyPrice * (Number(part.quantity) || 0);
       });
-    }
-    const dailyProfit = canViewMargin ? dailyRevenue - totalCostOfGoodsSold : 0;
+      const totals = computeTotals([
+        { total: Number(repair.laborCost) || 0 },
+        ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
+      ], Number(repair.discount) || 0, {
+        tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+        tva: repair.tvaRate,
+      });
+      repairProfit += totals.taxableAmount - partCost;
+    });
+    const dailyProfit = canViewMargin && saleMargins.every(item => item.complete) && repairCostsComplete
+      ? saleMargins.reduce((sum, item) => sum + (item.profit || 0), 0) + repairProfit - dailyExpenses
+      : null;
 
     // 5. Products sold TODAY
     const productCounts: Record<string, { name: string, count: number, total: number }> = {};
@@ -444,7 +491,71 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       todaySales,
       configuredMinStock
     };
-  }, [sales, products, productBuyPriceMap, supplies, storeSettings, canViewBuyPrice, canViewMargin, isAdmin]);
+  }, [sales, products, productBuyPriceMap, saleCostSnapshots, repairs, repairCostSnapshots, expenses, storeSettings, canViewBuyPrice, canViewMargin, isAdmin]);
+
+  const financialSummary = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    if (financialPeriod === '7') start.setDate(start.getDate() - 6);
+    else if (financialPeriod === '30') start.setDate(start.getDate() - 29);
+    else if (financialPeriod === '90') start.setDate(start.getDate() - 89);
+    else if (financialPeriod === 'year') start.setMonth(0, 1);
+    else if (financialPeriod === 'all') start.setTime(0);
+    const getDate = (value: any) => value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value || 0);
+    const inRange = (value: any) => getDate(value) >= start && getDate(value) <= now;
+    const rangeSales = sales.filter(sale => inRange(sale.date));
+    const rangeRepairs = isAdmin ? repairs.filter(repair => inRange(repair.deliveredAt || repair.date)) : [];
+    const deliveredRepairs = rangeRepairs.filter(repair => repair.status === 'livre');
+    const rangeExpenses = isAdmin ? expenses.filter(expense => inRange(expense.date)) : [];
+    const salesRevenue = rangeSales.reduce((sum, sale) =>
+      sum + computeSaleProfit(sale, saleCostSnapshots[sale.id]).revenueExcludingTax, 0);
+    const laborRevenue = deliveredRepairs.reduce((sum, repair) => sum + (Number(repair.laborCost) || 0), 0);
+    const repairPartsRevenue = deliveredRepairs.reduce((sum, repair) =>
+      sum + (repair.parts || []).reduce((partSum: number, part: any) => partSum + (Number(part.total) || 0), 0), 0);
+    const repairRevenue = deliveredRepairs.reduce((sum, repair) => sum + computeTotals([
+      { total: Number(repair.laborCost) || 0 },
+      ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
+    ], Number(repair.discount) || 0, {
+      tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+      tva: repair.tvaRate,
+    }).taxableAmount, 0);
+    let repairPartsCost = 0;
+    let repairsComplete = true;
+    deliveredRepairs.forEach(repair => {
+      const costs = repairCostSnapshots[repair.id] || {};
+      (repair.parts || []).forEach((part: any) => {
+        const buyPrice = costs[part.productId] ?? part.unitBuyPrice;
+        if (typeof buyPrice !== 'number' || !Number.isFinite(buyPrice)) repairsComplete = false;
+        else repairPartsCost += buyPrice * (Number(part.quantity) || 0);
+      });
+    });
+    const saleMargins = rangeSales.map(sale => computeSaleProfit(sale, saleCostSnapshots[sale.id]));
+    const missingSaleCosts = saleMargins.filter(item => !item.complete).length;
+    const salesProfit = saleMargins.reduce((sum, item) => sum + (item.profit || 0), 0);
+    const repairsProfit = repairRevenue - repairPartsCost;
+    const grossProfit = canViewMargin && missingSaleCosts === 0 && repairsComplete
+      ? Math.round((salesProfit + repairsProfit + Number.EPSILON) * 1000) / 1000
+      : null;
+    const expensesTotal = rangeExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+    const revenue = salesRevenue + repairRevenue;
+    return {
+      revenue,
+      collected: rangeSales.reduce((sum, sale) => sum + (Number(sale.paid) || 0), 0) +
+        rangeRepairs.reduce((sum, repair) => sum + (Number(repair.paid) || 0), 0),
+      debt: rangeSales.reduce((sum, sale) => sum + (Number(sale.debt) || 0), 0) +
+        rangeRepairs.reduce((sum, repair) => sum + (Number(repair.debt) || 0), 0),
+      grossProfit,
+      expenses: expensesTotal,
+      netProfit: grossProfit === null ? null : Math.round((grossProfit - expensesTotal + Number.EPSILON) * 1000) / 1000,
+      laborRevenue,
+      repairPartsRevenue,
+      repairPartsCost,
+      incompleteSales: missingSaleCosts,
+      incompleteRepairs: repairsComplete ? 0 : 1,
+      salesWithTva: rangeSales.filter(sale => Number(sale.tva) > 0).length,
+    };
+  }, [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, financialPeriod, canViewMargin, isAdmin]);
 
   // Group ALL sales chronologically by day to build historical statistics dynamically
   const dailyRecords = useMemo(() => {
@@ -453,51 +564,85 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       dateObj: Date;
       revenue: number;
       profit: number;
+      profitComplete: boolean;
       debt: number;
       salesCount: number;
       cashAmount: number;
     }> = {};
 
-    sales.forEach(sale => {
-      const sDate = getSaleDate(sale);
-      const year = sDate.getFullYear();
-      const month = String(sDate.getMonth() + 1).padStart(2, '0');
-      const day = String(sDate.getDate()).padStart(2, '0');
-      const dayKey = `${year}-${month}-${day}`;
-
+    const getDayKey = (date: Date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    const getOrCreate = (date: Date) => {
+      const dayKey = getDayKey(date);
       if (!dailyMap[dayKey]) {
         dailyMap[dayKey] = {
           dateStr: dayKey,
-          dateObj: sDate,
+          dateObj: date,
           revenue: 0,
           profit: 0,
+          profitComplete: true,
           debt: 0,
           salesCount: 0,
-          cashAmount: 0
+          cashAmount: 0,
         };
       }
+      return dailyMap[dayKey];
+    };
 
-      // Calculate purchase COGS to calculate net profits
-      let saleCOGS = 0;
-      if (canViewBuyPrice && sale.items && Array.isArray(sale.items)) {
-        sale.items.forEach(item => {
-          const buyPrice = productBuyPriceMap[item.productId] !== undefined
-            ? productBuyPriceMap[item.productId]
-            : (item.price * 0.7);
-          saleCOGS += buyPrice * item.quantity;
-        });
-      }
-
-      const record = dailyMap[dayKey];
-      record.revenue += sale.total || 0;
-      if (canViewMargin) record.profit += ((sale.total || 0) - saleCOGS);
+    sales.forEach(sale => {
+      const sDate = getSaleDate(sale);
+      const record = getOrCreate(sDate);
+      const margin = computeSaleProfit(sale, saleCostSnapshots[sale.id]);
+      record.revenue += margin.revenueExcludingTax;
+      if (margin.profit === null) record.profitComplete = false;
+      else record.profit += margin.profit;
       record.debt += sale.debt || 0;
       record.salesCount += 1;
       record.cashAmount += sale.paid || 0;
     });
 
+    if (isAdmin) {
+      repairs.filter(repair => repair.status === 'livre').forEach(repair => {
+        const dateValue = repair.deliveredAt || repair.date;
+        const date = dateValue?.toDate ? dateValue.toDate() : new Date(dateValue || 0);
+        const record = getOrCreate(date);
+        const costs = repairCostSnapshots[repair.id] || {};
+        let partsCost = 0;
+        (repair.parts || []).forEach((part: any) => {
+          const buyPrice = costs[part.productId] ?? part.unitBuyPrice;
+          if (typeof buyPrice !== 'number' || !Number.isFinite(buyPrice)) record.profitComplete = false;
+          else partsCost += buyPrice * (Number(part.quantity) || 0);
+        });
+        const totals = computeTotals([
+          { total: Number(repair.laborCost) || 0 },
+          ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
+        ], Number(repair.discount) || 0, {
+          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+          tva: repair.tvaRate,
+        });
+        record.revenue += totals.taxableAmount;
+        record.profit += totals.taxableAmount - partsCost;
+        record.debt += Number(repair.debt) || 0;
+        record.cashAmount += Number(repair.paid) || 0;
+      });
+      expenses.forEach(expense => {
+        const value = expense.date?.toDate ? expense.date.toDate() : new Date(expense.date || 0);
+        const record = getOrCreate(value);
+        record.profit -= Number(expense.amount) || 0;
+      });
+      expenses.forEach(expense => {
+        const value = expense.date?.toDate ? expense.date.toDate() : new Date(expense.date || 0);
+        const record = getOrCreate(value);
+        record.profit -= Number(expense.amount) || 0;
+      });
+    }
+
     return Object.values(dailyMap);
-  }, [sales, productBuyPriceMap, canViewMargin]);
+  }, [sales, saleCostSnapshots, repairs, repairCostSnapshots, expenses, isAdmin]);
 
   // Group ALL supplies chronologically by day to build historical expenses statistics dynamically
   const dailySuppliesRecords = useMemo(() => {
@@ -552,21 +697,24 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     const todayLimit = new Date();
     todayLimit.setHours(23, 59, 59, 999);
 
-    if (periodFilter === '7') {
+    if (periodFilter === 'today') {
       const boundary = new Date();
-      boundary.setDate(todayLimit.getDate() - 7);
+      boundary.setHours(0, 0, 0, 0);
+      result = result.filter(rec => rec.dateObj >= boundary);
+    } else if (periodFilter === '7') {
+      const boundary = new Date();
+      boundary.setDate(todayLimit.getDate() - 6);
       result = result.filter(rec => rec.dateObj >= boundary);
     } else if (periodFilter === '30') {
       const boundary = new Date();
-      boundary.setDate(todayLimit.getDate() - 30);
+      boundary.setDate(todayLimit.getDate() - 29);
       result = result.filter(rec => rec.dateObj >= boundary);
     } else if (periodFilter === '90') {
       const boundary = new Date();
-      boundary.setDate(todayLimit.getDate() - 90);
+      boundary.setDate(todayLimit.getDate() - 89);
       result = result.filter(rec => rec.dateObj >= boundary);
-    } else if (periodFilter === '100') {
-      const boundary = new Date();
-      boundary.setDate(todayLimit.getDate() - 100);
+    } else if (periodFilter === 'year') {
+      const boundary = new Date(todayLimit.getFullYear(), 0, 1);
       result = result.filter(rec => rec.dateObj >= boundary);
     } else if (periodFilter === 'custom') {
       if (startDate) {
@@ -762,13 +910,13 @@ export default function Dashboard({ userProfile }: DashboardProps) {
             'Chiffre d\'Affaires (DT)': rec.revenue.toFixed(3)
           };
         } else if (activeModal === 'profit') {
-          const ratio = rec.revenue > 0 ? ((rec.profit / rec.revenue) * 100).toFixed(1) + '%' : '0.0%';
+          const ratio = rec.profitComplete && rec.revenue > 0 ? ((rec.profit / rec.revenue) * 100).toFixed(1) + '%' : '—';
           return {
             'Date': fmtDate,
             'Chiffre d\'Affaires (DT)': rec.revenue.toFixed(3),
-            'Coût Articles (DT)': (rec.revenue - rec.profit).toFixed(3),
+            'Coûts et dépenses (DT)': rec.profitComplete ? (rec.revenue - rec.profit).toFixed(3) : 'Coûts manquants',
             'Marge Ratio (%)': ratio,
-            'Bénéfice Net (DT)': rec.profit.toFixed(3)
+            'Bénéfice Net (DT)': rec.profitComplete ? rec.profit.toFixed(3) : 'Coûts manquants'
           };
         } else if (activeModal === 'debt') {
           return {
@@ -808,7 +956,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     if (!canViewMargin && type === 'profit') return;
     setActiveModal(type);
     setSearchQuery('');
-    setPeriodFilter('100'); // Default to 100 days as requested
+    setPeriodFilter('30');
     setStartDate('');
     setEndDate('');
     setSortField('date');
@@ -933,6 +1081,18 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     }
   };
 
+  const financialCards = [
+    { label: "Chiffre d'affaires", value: financialSummary.revenue, style: 'text-slate-900' },
+    { label: 'Encaissé', value: financialSummary.collected, style: 'text-emerald-700' },
+    { label: 'Impayés / dettes', value: financialSummary.debt, style: 'text-rose-700' },
+    ...(canViewMargin ? [
+      { label: 'Bénéfice brut', value: financialSummary.grossProfit, style: 'text-indigo-700' },
+      { label: 'Dépenses', value: financialSummary.expenses, style: 'text-rose-700' },
+      { label: 'Bénéfice net', value: financialSummary.netProfit, style: 'text-emerald-700' },
+    ] : []),
+  ];
+  const historicalTvaSalesCount = sales.filter(sale => Number(sale.tva) > 0).length;
+
   if (loading) return (
     <div className="h-full min-h-[60vh] flex flex-col items-center justify-center gap-3">
       <div className="animate-spin rounded-full h-12 w-12 border-4 border-slate-200 border-b-indigo-600"></div>
@@ -966,6 +1126,50 @@ export default function Dashboard({ userProfile }: DashboardProps) {
           </div>
         </div>
       </div>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-black uppercase tracking-wider text-slate-500">Synthèse financière</h2>
+          <select
+            value={financialPeriod}
+            onChange={event => setFinancialPeriod(event.target.value as typeof financialPeriod)}
+            className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+            aria-label="Période de la synthèse financière"
+          >
+            <option value="today">Aujourd'hui</option>
+            <option value="7">7 jours</option>
+            <option value="30">30 jours</option>
+            <option value="90">90 jours</option>
+            <option value="year">Cette année</option>
+            <option value="all">Tout</option>
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-6">
+          {financialCards.map(card => (
+            <div key={card.label} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="truncate text-[10px] font-black uppercase tracking-wider text-slate-400">{card.label}</p>
+              <p className={`mt-2 truncate font-mono text-xl font-black tabular-nums ${card.style}`}>
+                {card.value === null ? '—' : `${card.value.toFixed(3)} ${currency}`}
+              </p>
+            </div>
+          ))}
+        </div>
+        {canViewMargin && (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+            <strong>CA réparations :</strong> main-d’œuvre {financialSummary.laborRevenue.toFixed(3)} {currency}
+            {' · '}pièces facturées {financialSummary.repairPartsRevenue.toFixed(3)} {currency}
+            {' · '}coût des pièces {financialSummary.repairPartsCost.toFixed(3)} {currency}
+            {' · '}{financialSummary.salesWithTva} vente(s) avec TVA sur la période
+            {' · '}historique total : {historicalTvaSalesCount} vente(s) avec TVA
+            {(financialSummary.incompleteSales > 0 || financialSummary.incompleteRepairs > 0) && (
+              <p role="status" className="mt-2 font-semibold text-amber-700">
+                Bénéfice masqué : coûts historiques manquants pour {financialSummary.incompleteSales} vente(s)
+                {financialSummary.incompleteRepairs ? ' ou certaines réparations' : ''}. Aucun coût estimé n’est utilisé.
+              </p>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* SYSTÈME D'ALERTE VISUELLE : NOTIFICATION DE STOCK MINIMUM */}
       {dashboardData.lowStockAlerts.length > 0 && !stockAlertDismissed && (
@@ -1104,7 +1308,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
               <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
-                {dashboardData.dailyProfit.toFixed(3)}
+                {dashboardData.dailyProfit === null ? '—' : dashboardData.dailyProfit.toFixed(3)}
               </span>
               <span className="text-[10px] sm:text-xs font-black text-emerald-150 shrink-0">{currency}</span>
             </div>
@@ -1584,11 +1788,12 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                 ) : (
                   <div className="md:col-span-8 flex flex-wrap items-center gap-2 md:justify-end">
                     <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider mr-1">Filtre Période :</span>
-                    {(['7', '30', '90', '100', 'all', 'custom'] as const).map(p => {
-                      const label = p === '7' ? '7 jours' :
+                    {(['today', '7', '30', '90', 'year', 'all', 'custom'] as const).map(p => {
+                      const label = p === 'today' ? "Aujourd'hui" :
+                                    p === '7' ? '7 jours' :
                                     p === '30' ? '30 jours' :
                                     p === '90' ? '90 jours' :
-                                    p === '100' ? '100 jours' :
+                                    p === 'year' ? 'Cette année' :
                                     p === 'all' ? 'Tout' : 'Personnalisée';
                       return (
                         <button

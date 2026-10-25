@@ -25,6 +25,7 @@ import {
   WifiOff,
   Wrench,
   BookOpen,
+  CircleDollarSign,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { UserProfile, Note } from './types';
@@ -69,6 +70,7 @@ const NAV_SECTIONS = [
     title: 'ADMINISTRATION',
     items: [
       { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
+      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
       { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
     ],
   },
@@ -108,6 +110,7 @@ import UsersManager from './components/Users';
 import Notes from './components/Notes';
 import Repairs from './components/Repairs';
 import Parts from './components/Parts';
+import Expenses from './components/Expenses';
 import { StartupProvider } from './components/StartupProvider';
 
 // Error Handling
@@ -858,6 +861,7 @@ export default function App() {
                 <Route path="/parts" element={hasMenuAccess(userProfile, 'pieces') ? <Parts userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/notes" element={hasMenuAccess(userProfile, 'notes') ? <Notes userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/expenses" element={userProfile?.role === 'admin' ? <Expenses userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/startup" element={<Navigate to="/settings#startup-settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
                 <Route path="/settings" element={<Settings

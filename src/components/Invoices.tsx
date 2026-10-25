@@ -4,7 +4,7 @@ import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, ser
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
-import { computeTotals } from '../lib/financial';
+import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { Invoice, Product, Client, SaleItem, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, FileText, Eye, X, Printer, Download, User, Calendar, ShoppingBag, Plus, Trash2, Minus, AlertCircle, CheckCircle2 } from 'lucide-react';
@@ -84,7 +84,8 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
     const unsubscribeSettings = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
-        setStoreSettings(snapshot.data() as StoreSettings);
+        const data = snapshot.data() as StoreSettings;
+        setStoreSettings({ ...data, ...normalizeFinancialSettings(data) });
       }
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `settings/${ownerId}`);
@@ -200,6 +201,8 @@ export default function Invoices({ userProfile }: InvoicesProps) {
     }
 
     try {
+      const saleRef = doc(collection(db, 'sales'));
+      const invoiceRef = doc(collection(db, 'invoices'));
       await runTransaction(db, async (transaction) => {
         
         // 1. ALL READS FIRST
@@ -260,9 +263,6 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           transaction.update(clientUpdate.ref, { debt: clientUpdate.newDebt });
         }
 
-        const saleRef = doc(collection(db, 'sales'));
-        const invoiceRef = doc(collection(db, 'invoices'));
-
         const saleData = {
           date: serverTimestamp(),
           clientId: selectedClient?.id || null,
@@ -308,6 +308,13 @@ export default function Invoices({ userProfile }: InvoicesProps) {
         transaction.set(saleRef, saleData);
         transaction.set(invoiceRef, invoiceData);
       });
+
+      try {
+        await apiFetch(`/financial/sales/${encodeURIComponent(saleRef.id)}/costs`, { method: 'POST' });
+      } catch (costError) {
+        console.error('Invoice sale purchase-cost snapshot failed after commit.');
+        setError(`Facture enregistrée, mais le coût d'achat n'a pas pu être figé. ${costError instanceof Error ? costError.message : ''}`);
+      }
 
       setSaleSuccess('Facture créée avec succès !');
       setTimeout(() => {
@@ -765,13 +772,13 @@ export default function Invoices({ userProfile }: InvoicesProps) {
               </div>
 
               <div className="bg-gray-900 text-white p-5 sm:p-8 rounded-3xl space-y-3 sm:space-y-4 shadow-xl shadow-gray-900/20">
-                {storeSettings?.tvaEnabled === true && selectedInvoice.tva > 0 && (
+                {selectedInvoice.tvaEnabled === true && selectedInvoice.tva > 0 && (
                   <div className="flex justify-between items-center opacity-70">
                     <span className="text-xs uppercase tracking-widest font-bold">Sous-total</span>
                     <span className="font-mono text-xs sm:text-sm">{(selectedInvoice.subtotal ?? selectedInvoice.total - selectedInvoice.tva).toFixed(3)} {storeSettings?.currency || 'DT'}</span>
                   </div>
                 )}
-                {storeSettings?.tvaEnabled === true && selectedInvoice.tva > 0 && (
+                {selectedInvoice.tvaEnabled === true && selectedInvoice.tva > 0 && (
                   <div className="flex justify-between items-center opacity-70">
                     <span className="text-xs uppercase tracking-widest font-bold">TVA ({storeSettings?.tva || 0}%)</span>
                     <span className="font-mono text-xs sm:text-sm">{selectedInvoice.tva.toFixed(3)} {storeSettings?.currency || 'DT'}</span>

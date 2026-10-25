@@ -150,6 +150,7 @@ export interface StoreSettings {
   phone?: string;
   tva: number;
   tvaEnabled?: boolean;
+  tvaOptIn?: boolean;
   ownerId?: string;
   deleteCode?: string;
   minStockAlert?: number;
@@ -228,6 +229,7 @@ export interface Repair {
   subtotal?: number;
   tva?: number;
   tvaEnabled?: boolean;
+  tvaOptIn?: boolean;
   tvaRate?: number;
   paid: number;
   debt: number;

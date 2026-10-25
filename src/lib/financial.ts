@@ -1,9 +1,11 @@
 export interface FinancialSettings {
   tvaEnabled?: boolean;
   tva?: number;
+  tvaOptIn?: boolean;
 }
 
 export interface FinancialLine {
+  productId?: string;
   price?: number;
   unitPrice?: number;
   quantity?: number;
@@ -28,8 +30,35 @@ export interface StoredInvoiceFinancials {
   discount?: number;
 }
 
+export interface SaleCostLine {
+  productId: string;
+  quantity: number;
+  unitBuyPrice: number | null;
+}
+
+export interface SaleProfitInput {
+  total: number;
+  subtotal?: number;
+  tva?: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
+  discount?: number;
+  items: readonly FinancialLine[];
+}
+
 export function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 1000) / 1000;
+}
+
+export function normalizeFinancialSettings(
+  settings: FinancialSettings | null | undefined,
+): FinancialSettings {
+  const optedIn = settings?.tvaOptIn === true;
+  return {
+    tvaEnabled: optedIn && settings?.tvaEnabled === true,
+    tva: optedIn ? Math.max(0, Number(settings?.tva) || 0) : 0,
+    tvaOptIn: optedIn,
+  };
 }
 
 export function computeTotals(
@@ -79,5 +108,39 @@ export function getInvoiceTotals(invoice: StoredInvoiceFinancials): FinancialTot
     tva,
     total,
     tvaVisible: false,
+  };
+}
+
+export function computeSaleProfit(
+  sale: SaleProfitInput,
+  costLines: readonly SaleCostLine[] | undefined,
+): { revenueExcludingTax: number; cost: number; profit: number | null; complete: boolean } {
+  const computedTotals = typeof sale.tvaEnabled === 'boolean'
+    ? computeTotals(sale.items, sale.discount || 0, {
+      tvaEnabled: sale.tvaEnabled,
+      tva: sale.tvaRate,
+    })
+    : null;
+  const revenueExcludingTax = computedTotals
+    ? computedTotals.taxableAmount
+    : typeof sale.subtotal === 'number'
+      ? roundMoney(Math.max(0, sale.subtotal - (Number(sale.discount) || 0)))
+      : roundMoney(Math.max(0, sale.total - (Number(sale.tva) || 0)));
+  const costsByProduct = new Map((costLines || []).map(line => [line.productId, line]));
+  const allLinesCosted = sale.items.every(item => {
+    const line = costsByProduct.get(String((item as FinancialLine & { productId?: string }).productId || ''));
+    return line && typeof line.unitBuyPrice === 'number' && Number.isFinite(line.unitBuyPrice);
+  });
+  const cost = roundMoney(sale.items.reduce((sum, item) => {
+    const line = costsByProduct.get(String((item as FinancialLine & { productId?: string }).productId || ''));
+    if (!line || typeof line.unitBuyPrice !== 'number') return sum;
+    return sum + line.unitBuyPrice * (Number(item.quantity) || 0);
+  }, 0));
+
+  return {
+    revenueExcludingTax,
+    cost,
+    profit: allLinesCosted ? roundMoney(revenueExcludingTax - cost) : null,
+    complete: allLinesCosted,
   };
 }

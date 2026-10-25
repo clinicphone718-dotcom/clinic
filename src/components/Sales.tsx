@@ -9,6 +9,7 @@ import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { addPendingOperation } from '../lib/offlineManager';
+import { computeSaleProfit } from '../lib/financial';
 
 interface SalesProps {
   userProfile: UserProfile | null;
@@ -16,6 +17,7 @@ interface SalesProps {
 
 export default function Sales({ userProfile }: SalesProps) {
   const [sales, setSales] = useState<Sale[]>([]);
+  const [saleCostSnapshots, setSaleCostSnapshots] = useState<Record<string, Array<{ productId: string; quantity: number; unitBuyPrice: number | null }>>>({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [productCode, setProductCode] = useState('');
@@ -272,13 +274,43 @@ export default function Sales({ userProfile }: SalesProps) {
     return unsubscribe;
   }, [userProfile]);
 
+  useEffect(() => {
+    if (userProfile?.role !== 'admin' || !auth.currentUser) {
+      setSaleCostSnapshots({});
+      return;
+    }
+    const tenantOwnerId = userProfile.ownerId || userProfile.uid;
+    return onSnapshot(
+      query(collection(db, 'sale_costs'), where('ownerId', '==', tenantOwnerId)),
+      snapshot => setSaleCostSnapshots(Object.fromEntries(snapshot.docs.map(item => [
+        item.id,
+        (item.data().items || []) as Array<{ productId: string; quantity: number; unitBuyPrice: number | null }>,
+      ]))),
+      error => handleFirestoreError(error, OperationType.LIST, 'sale_costs'),
+    );
+  }, [userProfile]);
+
+  const saleHasLoss = (sale: Sale) => {
+    if (userProfile?.role !== 'admin') return false;
+    const costs = saleCostSnapshots[sale.id] || [];
+    const profit = computeSaleProfit(sale, costs).profit;
+    return (profit !== null && profit < 0) || costs.some(cost => {
+      const item = sale.items.find(line => line.productId === cost.productId);
+      return item && typeof cost.unitBuyPrice === 'number' && item.price < cost.unitBuyPrice;
+    });
+  };
+
   // Charge les produits pour permettre la recherche d'historique par code produit (code-barres / ID / nom)
   useEffect(() => {
     if (!auth.currentUser || !userProfile) return;
     const tenantOwnerId = userProfile.ownerId || userProfile.uid;
     const q = query(collection(db, 'products'), where('ownerId', '==', tenantOwnerId));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setProducts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      setProducts(snapshot.docs.map(d => {
+        const data = d.data();
+        delete data.buyPrice;
+        return { id: d.id, ...data } as Product;
+      }));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'products');
     });
@@ -519,6 +551,9 @@ export default function Sales({ userProfile }: SalesProps) {
                           {sale.clientName?.[0]?.toUpperCase() || '?'}
                         </div>
                         <span className="text-sm font-bold text-slate-700">{sale.clientName || 'Client inconnu'}</span>
+                        {saleHasLoss(sale) && (
+                          <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[9px] font-black uppercase text-rose-700">Vendu à perte</span>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4">

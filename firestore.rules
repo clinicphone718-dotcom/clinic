@@ -495,6 +495,28 @@ service cloud.firestore {
         hasAnyMenu(['sales', 'settings']);
     }
 
+    match /sale_costs/{saleId} {
+      allow read: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+      allow create, update, delete: if false;
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        request.resource.data.keys().hasOnly([
+          'ownerId', 'date', 'label', 'category', 'amount', 'mode', 'createdAt', 'createdBy', 'sessionId'
+        ]) &&
+        request.resource.data.keys().hasAll(['ownerId', 'date', 'label', 'category', 'amount', 'mode']) &&
+        request.resource.data.date is timestamp &&
+        request.resource.data.label is string &&
+        request.resource.data.label.size() > 0 &&
+        request.resource.data.category is string &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.mode is string;
+      allow update, delete: if false;
+    }
+
     match /invoices/{invoiceId} {
       allow read: if hasAccess(resource.data.get('ownerId', '')) &&
         hasAnyMenu(['invoices', 'sales', 'clients', 'settings']);

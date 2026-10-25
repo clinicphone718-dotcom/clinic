@@ -17,10 +17,11 @@ import {
 } from 'lucide-react';
 import { cn, isSparePart, decodeAzertyBarcode } from '../lib/utils';
 import { getRepairStockChanges, getRepairStockMovementId } from '../lib/repairInventory';
-import { computeTotals } from '../lib/financial';
+import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { format } from 'date-fns';
 import { RepairTicket } from './RepairTicket';
 import { can } from '../lib/permissions';
+import { apiFetch } from '../lib/api';
 
 interface RepairsProps {
   userProfile: UserProfile | null;
@@ -344,7 +345,15 @@ export default function Repairs({ userProfile }: RepairsProps) {
       )
       : () => setRepairCosts({});
     const unsubSettings = onSnapshot(doc(db, 'settings', ownerId), (snap) => {
-      if (snap.exists()) setSettings({ id: snap.id, ...snap.data() } as StoreSettings);
+      if (snap.exists()) {
+        const data = snap.data() as StoreSettings;
+        const { id: _storedId, ...settingsData } = data;
+        setSettings({
+          ...settingsData,
+          ...normalizeFinancialSettings(settingsData),
+          id: snap.id,
+        });
+      }
     });
     return () => { unsubRepairs(); unsubClients(); unsubProducts(); unsubProductCosts(); unsubSpareParts(); unsubPartCosts(); unsubRepairCosts(); unsubSettings(); };
   }, [ownerId, isAdmin, canViewProductBuyPrice, canViewPartBuyPrice, canViewCosts, userProfile]);
@@ -446,36 +455,40 @@ export default function Repairs({ userProfile }: RepairsProps) {
     return Object.values(map).sort((a, b) => b.dateStr.localeCompare(a.dateStr));
   }, [repairs]);
 
-  // Bénéfice net par jour des réparations livrées (facturé - coût d'achat des pièces).
-  // Coût pièce = prix d'achat figé sur la ligne ; repli sur le prix d'achat actuel si absent.
+  // Les coûts historiques absents restent explicitement incomplets; aucun prix actuel n'est substitué.
   const dailyNetProfit = useMemo(() => {
     if (!canViewCosts) return [];
-    const map: Record<string, { dateStr: string; count: number; revenue: number; partsCost: number; profit: number }> = {};
+    const map: Record<string, { dateStr: string; count: number; revenue: number; partsCost: number; profit: number; complete: boolean }> = {};
     repairs.filter(r => r.status === 'livre').forEach(r => {
       const key = dayKeyOf(toJsDate(r.deliveredAt || r.date));
-      if (!map[key]) map[key] = { dateStr: key, count: 0, revenue: 0, partsCost: 0, profit: 0 };
-      const partsCost = (r.parts || []).reduce((s, p) => {
-        const unitCost = p.inventoryCollection === 'parts'
-          ? (partCosts[p.productId] || 0)
-          : (repairCosts[r.id]?.[p.productId] || 0) > 0
-          ? repairCosts[r.id][p.productId]
-          : (p.unitBuyPrice && p.unitBuyPrice > 0)
-          ? p.unitBuyPrice
-          : (products.find(pr => pr.id === p.productId)?.buyPrice || 0);
-        return s + unitCost * (p.quantity || 0);
-      }, 0);
-      const revenue = r.total || 0;
+      if (!map[key]) map[key] = { dateStr: key, count: 0, revenue: 0, partsCost: 0, profit: 0, complete: true };
+      let partsCost = 0;
+      (r.parts || []).forEach(part => {
+        const unitCost = repairCosts[r.id]?.[part.productId] ?? part.unitBuyPrice;
+        if (typeof unitCost !== 'number' || !Number.isFinite(unitCost)) map[key].complete = false;
+        else partsCost += unitCost * (part.quantity || 0);
+      });
+      const discount = Number(r.discount) || 0;
+      const totals = computeTotals([
+        { total: Number(r.laborCost) || 0 },
+        ...(r.parts || []).map(part => ({ total: Number(part.total) || 0 })),
+      ], discount, {
+        tvaEnabled: r.tvaEnabled === true && r.tvaOptIn === true,
+        tva: r.tvaRate,
+      });
+      const revenue = totals.taxableAmount;
       map[key].count += 1;
       map[key].revenue += revenue;
       map[key].partsCost += partsCost;
       map[key].profit += (revenue - partsCost);
     });
     return Object.values(map).sort((a, b) => b.dateStr.localeCompare(a.dateStr));
-  }, [repairs, products, partCosts, repairCosts, canViewCosts]);
+  }, [repairs, repairCosts, canViewCosts]);
 
   const todayProfit = useMemo(() => {
     const todayKey = dayKeyOf(new Date());
-    return dailyNetProfit.find(d => d.dateStr === todayKey)?.profit || 0;
+    const today = dailyNetProfit.find(d => d.dateStr === todayKey);
+    return today ? (today.complete ? today.profit : null) : 0;
   }, [dailyNetProfit]);
 
   const todayCount = useMemo(() => {
@@ -580,7 +593,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           { label: 'En cours', value: stats.active, icon: Clock, color: 'from-indigo-500 to-indigo-600' },
           { label: 'Prêts à récupérer', value: stats.ready, icon: CheckCircle, color: 'from-emerald-500 to-emerald-600' },
           { label: 'Réparations du jour', value: todayCount, icon: Package, color: 'from-amber-500 to-amber-600', onClick: () => setStatsModal('count') },
-          { label: 'Bénéfice net du jour', value: `${todayProfit.toFixed(2)} ${currency}`, icon: DollarSign, color: 'from-teal-500 to-cyan-600', onClick: () => setStatsModal('profit') },
+          { label: 'Bénéfice net du jour', value: todayProfit === null ? '—' : `${todayProfit.toFixed(3)} ${currency}`, icon: DollarSign, color: 'from-teal-500 to-cyan-600', onClick: () => setStatsModal('profit') },
         ].filter((s: any) => canViewCosts || s.label !== 'Bénéfice net du jour').map((s: any, i) => {
           const Icon = s.icon;
           return (
@@ -792,9 +805,9 @@ export default function Repairs({ userProfile }: RepairsProps) {
                         <tr key={d.dateStr} className="border-b border-slate-50 last:border-0">
                           <td className="py-2 font-semibold text-slate-700">{format(new Date(d.dateStr), 'dd/MM/yyyy')}</td>
                           <td className="py-2 text-right text-slate-600">{d.count}</td>
-                          <td className="py-2 text-right text-slate-600">{d.revenue.toFixed(2)}</td>
-                          <td className="py-2 text-right text-rose-500">{d.partsCost.toFixed(2)}</td>
-                          <td className="py-2 text-right font-black text-teal-600">{d.profit.toFixed(2)}</td>
+                          <td className="py-2 text-right text-slate-600">{d.revenue.toFixed(3)}</td>
+                          <td className="py-2 text-right text-rose-500">{d.complete ? d.partsCost.toFixed(3) : '—'}</td>
+                          <td className="py-2 text-right font-black text-teal-600">{d.complete ? d.profit.toFixed(3) : 'Coûts manquants'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -802,7 +815,9 @@ export default function Repairs({ userProfile }: RepairsProps) {
                       <tr className="border-t border-slate-200">
                         <td className="py-2 font-black text-slate-500 text-xs uppercase tracking-wider" colSpan={4}>Total</td>
                         <td className="py-2 text-right font-black text-teal-600">
-                          {dailyNetProfit.reduce((s, d) => s + d.profit, 0).toFixed(2)} {currency}
+                          {dailyNetProfit.every(d => d.complete)
+                            ? `${dailyNetProfit.reduce((s, d) => s + d.profit, 0).toFixed(3)} ${currency}`
+                            : 'Coûts historiques manquants'}
                         </td>
                       </tr>
                     </tfoot>
@@ -940,7 +955,11 @@ export function RepairForm({
 
   const partsTotal = parts.reduce((s, p) => s + p.total, 0);
   const financialSettings = isEdit
-    ? { tvaEnabled: repair?.tvaEnabled === true, tva: repair?.tvaRate || 0 }
+    ? {
+      tvaEnabled: repair?.tvaEnabled === true && repair?.tvaOptIn === true,
+      tva: repair?.tvaOptIn === true ? repair?.tvaRate || 0 : 0,
+      tvaOptIn: repair?.tvaOptIn === true,
+    }
     : settings;
   const repairTotals = computeTotals([
     { total: parseFloat(laborCost) || 0 },
@@ -1107,6 +1126,7 @@ export function RepairForm({
         tva: repairTotals.tva,
         tvaEnabled: financialSettings?.tvaEnabled === true,
         tvaRate: financialSettings?.tvaEnabled === true ? Number(financialSettings.tva) || 0 : 0,
+        tvaOptIn: financialSettings?.tvaEnabled === true,
         paid: paidValue,
         debt,
         warrantyDays: parseInt(warrantyDays) || 0,
@@ -1138,7 +1158,13 @@ export function RepairForm({
           });
           tx.update(repairRef, { ...payload, stockVersion: nextVersion });
         });
-        onSaved(`Réparation ${repair.number} mise à jour.`);
+        let message = `Réparation ${repair.number} mise à jour.`;
+        try {
+          await apiFetch(`/financial/repairs/${encodeURIComponent(repair.id)}/costs`, { method: 'POST' });
+        } catch {
+          message += " Attention : le coût d'achat n'a pas pu être figé.";
+        }
+        onSaved(message);
       } else {
         const number = await generateRepairNumber();
         const repairRef = doc(db, 'repairs', newRepairId);
@@ -1159,6 +1185,11 @@ export function RepairForm({
           });
           tx.set(repairRef, { ...payload, number, stockVersion: nextVersion, date: serverTimestamp() });
         });
+        try {
+          await apiFetch(`/financial/repairs/${encodeURIComponent(repairRef.id)}/costs`, { method: 'POST' });
+        } catch {
+          showError("Réparation enregistrée, mais le coût d'achat des pièces n'a pas pu être figé.");
+        }
         // Ouvre le bon de dépôt pour impression immédiate (au lieu de fermer directement).
         setPrintingRepair({ ...payload, id: repairRef.id, number, date: { toDate: () => new Date() } } as Repair);
       }
@@ -1520,8 +1551,8 @@ export function RepairDetail({
         { total: Number(repair.laborCost) || 0 },
         ...(repair.parts || []).map(part => ({ total: Number(part.total) || 0 })),
       ], discount, {
-        tvaEnabled: repair.tvaEnabled === true,
-        tva: repair.tvaRate || 0,
+        tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+        tva: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
       });
       const actualDiscount = Math.max(0, Math.round((repair.total - deliveryTotals.total) * 1000) / 1000);
       const dueAfterDiscount = Math.max(0, Math.round((repair.debt - actualDiscount) * 1000) / 1000);
@@ -1549,6 +1580,9 @@ export function RepairDetail({
           tx.update(doc(db, 'repairs', repair.id), {
             status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
             total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
+            tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+            tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
+            tvaOptIn: repair.tvaOptIn === true,
             paid: newPaid, debt: 0, discount: actualDiscount, logs,
           });
           tx.update(clientRef, { debt: currentClientDebt + restAfterPaidNow });
@@ -1566,6 +1600,9 @@ export function RepairDetail({
         await updateDoc(doc(db, 'repairs', repair.id), {
           status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
           total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
+          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+          tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
+          tvaOptIn: repair.tvaOptIn === true,
           paid: newPaid, debt: 0, discount: actualDiscount, logs,
         });
       }
