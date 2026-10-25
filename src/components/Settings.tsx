@@ -432,8 +432,8 @@ export default function Settings({
     currency: '',
     address: '',
     phone: '',
-    tva: 19,
-    tvaEnabled: true,
+    tva: 0,
+    tvaEnabled: false,
     deleteCode: '',
     minStockAlert: 5
   });
@@ -560,7 +560,7 @@ export default function Settings({
           'Total TTC (DT)': s.total || 0,
           'Payé (DT)': s.paid || 0,
           'Dette (DT)': s.debt || 0,
-          'TVA (DT)': s.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': s.tva || 0 } : {}),
           'Facture associée': s.invoiceId || 'N/A',
           'Détail des articles': itemsString
         };
@@ -577,7 +577,7 @@ export default function Settings({
           'Total TTC (DT)': inv.total || 0,
           'Payé (DT)': inv.paid || 0,
           'Dette (DT)': inv.debt || 0,
-          'TVA (DT)': inv.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': inv.tva || 0 } : {}),
           'Détail des articles': itemsString
         };
       });
@@ -585,7 +585,9 @@ export default function Settings({
       const totalCA = salesInRange.reduce((sum, s) => sum + (s.total || 0), 0);
       const totalPaye = salesInRange.reduce((sum, s) => sum + (s.paid || 0), 0);
       const totalDette = salesInRange.reduce((sum, s) => sum + (s.debt || 0), 0);
-      const totalTva = salesInRange.reduce((sum, s) => sum + (s.tva || 0), 0);
+      const totalTva = storeFormData.tvaEnabled
+        ? salesInRange.reduce((sum, s) => sum + (s.tva || 0), 0)
+        : 0;
 
       const resume = [
         { 'Indicateur': 'Magasin', 'Valeur': storeFormData.storeName || 'Magasin' },
@@ -596,7 +598,9 @@ export default function Settings({
         { 'Indicateur': "Chiffre d'affaires total (DT)", 'Valeur': totalCA.toFixed(2) },
         { 'Indicateur': 'Total encaissé (DT)', 'Valeur': totalPaye.toFixed(2) },
         { 'Indicateur': 'Total dettes générées (DT)', 'Valeur': totalDette.toFixed(2) },
-        { 'Indicateur': 'Total TVA collectée (DT)', 'Valeur': totalTva.toFixed(2) },
+        ...(storeFormData.tvaEnabled
+          ? [{ 'Indicateur': 'Total TVA collectée (DT)', 'Valeur': totalTva.toFixed(3) }]
+          : []),
         { 'Indicateur': 'Date de génération', 'Valeur': fmtDateTime(new Date()) }
       ];
 
@@ -746,7 +750,7 @@ export default function Settings({
           'Total TTC (DT)': d.total || 0,
           'Montant payé (DT)': d.paid || 0,
           'Dette restante (DT)': d.debt || 0,
-          'Montant TVA (DT)': d.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'Montant TVA (DT)': d.tva || 0 } : {}),
           'ID Facture associée': d.invoiceId || 'N/A',
           'Détail des Articles': itemsString
         };
@@ -770,7 +774,7 @@ export default function Settings({
           'Total Facture (DT)': d.total || 0,
           'Payé (DT)': d.paid || 0,
           'Dette (DT)': d.debt || 0,
-          'TVA (DT)': d.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': d.tva || 0 } : {}),
           'Date de Facturation': formattedDate,
           'Articles': itemsString
         };
@@ -871,8 +875,8 @@ export default function Settings({
           currency: data.currency || '',
           address: data.address || '',
           phone: data.phone || '',
-          tva: data.tva !== undefined ? data.tva : 19,
-          tvaEnabled: data.tvaEnabled !== false,
+          tva: data.tva !== undefined ? data.tva : 0,
+          tvaEnabled: data.tvaEnabled === true,
           deleteCode: data.deleteCode || '',
           minStockAlert: data.minStockAlert !== undefined ? data.minStockAlert : 5
         });
@@ -881,8 +885,8 @@ export default function Settings({
           id: ownerId,
           storeName: APP_NAME,
           currency: 'DT',
-          tva: 19,
-          tvaEnabled: true,
+          tva: 0,
+          tvaEnabled: false,
           minStockAlert: 5
         } as StoreSettings);
         setStoreFormData({
@@ -890,8 +894,8 @@ export default function Settings({
           currency: 'DT',
           address: '',
           phone: '',
-          tva: 19,
-          tvaEnabled: true,
+          tva: 0,
+          tvaEnabled: false,
           deleteCode: '',
           minStockAlert: 5
         });

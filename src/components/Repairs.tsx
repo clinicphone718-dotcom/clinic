@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { cn, isSparePart, decodeAzertyBarcode } from '../lib/utils';
 import { getRepairStockChanges, getRepairStockMovementId } from '../lib/repairInventory';
+import { computeTotals } from '../lib/financial';
 import { format } from 'date-fns';
 import { RepairTicket } from './RepairTicket';
 import { can } from '../lib/permissions';
@@ -938,7 +939,14 @@ export function RepairForm({
   ).slice(0, 6);
 
   const partsTotal = parts.reduce((s, p) => s + p.total, 0);
-  const total = (parseFloat(laborCost) || 0) + partsTotal;
+  const financialSettings = isEdit
+    ? { tvaEnabled: repair?.tvaEnabled === true, tva: repair?.tvaRate || 0 }
+    : settings;
+  const repairTotals = computeTotals([
+    { total: parseFloat(laborCost) || 0 },
+    ...parts.map(part => ({ total: part.total })),
+  ], 0, financialSettings);
+  const total = repairTotals.total;
   // Sans droit d'encaissement (Technicien), le montant payé reste celui déjà enregistré.
   const paidValue = canCash ? (parseFloat(paid) || 0) : (repair?.paid || 0);
   const debt = Math.max(0, total - paidValue);
@@ -1095,6 +1103,10 @@ export function RepairForm({
           total: part.total,
         })),
         total,
+        subtotal: repairTotals.subtotal,
+        tva: repairTotals.tva,
+        tvaEnabled: financialSettings?.tvaEnabled === true,
+        tvaRate: financialSettings?.tvaEnabled === true ? Number(financialSettings.tva) || 0 : 0,
         paid: paidValue,
         debt,
         warrantyDays: parseInt(warrantyDays) || 0,
@@ -1328,13 +1340,19 @@ export function RepairForm({
             )}
             <div className="col-span-2 flex items-center justify-between border-t border-slate-200 pt-3">
               <span className="text-slate-800 font-black">TOTAL</span>
-              <span className="font-black text-lg text-indigo-600">{total.toFixed(2)} {currency}</span>
+              <span className="font-black text-lg text-indigo-600">{total.toFixed(3)} {currency}</span>
             </div>
+            {financialSettings?.tvaEnabled === true && (
+              <div className="col-span-2 flex items-center justify-between text-xs text-slate-500">
+                <span>TVA ({financialSettings.tva || 0}%)</span>
+                <span>{repairTotals.tva.toFixed(3)} {currency}</span>
+              </div>
+            )}
             <Field label="Payé / acompte" value={canCash ? paid : String(paidValue)} onChange={setPaid} type="number" placeholder="0" disabled={!canCash} />
             <div>
               <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Reste dû</label>
               <div className={cn("px-4 py-2.5 rounded-xl text-sm font-black", debt > 0 ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600")}>
-                {debt.toFixed(2)} {currency}
+                {debt.toFixed(3)} {currency}
               </div>
             </div>
             <Field label="Garantie (jours)" value={warrantyDays} onChange={setWarrantyDays} type="number" placeholder="30" />
@@ -1498,9 +1516,17 @@ export function RepairDetail({
       let warrantyUntil = repair.warrantyUntil;
       if (days > 0) { const d = new Date(); d.setDate(d.getDate() + days); warrantyUntil = d.toISOString(); }
 
-      const dueAfterDiscount = Math.max(0, Math.round((repair.debt - discount) * 1000) / 1000);
+      const deliveryTotals = computeTotals([
+        { total: Number(repair.laborCost) || 0 },
+        ...(repair.parts || []).map(part => ({ total: Number(part.total) || 0 })),
+      ], discount, {
+        tvaEnabled: repair.tvaEnabled === true,
+        tva: repair.tvaRate || 0,
+      });
+      const actualDiscount = Math.max(0, Math.round((repair.total - deliveryTotals.total) * 1000) / 1000);
+      const dueAfterDiscount = Math.max(0, Math.round((repair.debt - actualDiscount) * 1000) / 1000);
       const restAfterPaidNow = Math.max(0, Math.round((dueAfterDiscount - paidNow) * 1000) / 1000);
-      const newTotal = Math.max(0, Math.round((repair.total - discount) * 1000) / 1000);
+      const newTotal = deliveryTotals.total;
       const newPaid = Math.round((repair.paid + paidNow) * 1000) / 1000;
 
       if (restAfterPaidNow > 0 && !repairClient) {
@@ -1508,7 +1534,7 @@ export function RepairDetail({
       }
 
       let note = `Livré — Encaissé ${paidNow.toFixed(3)} ${currency}`;
-      if (discount > 0) note += `, remise ${discount.toFixed(3)} ${currency}`;
+      if (actualDiscount > 0) note += `, remise ${actualDiscount.toFixed(3)} ${currency}`;
       if (restAfterPaidNow > 0) note += `, ${restAfterPaidNow.toFixed(3)} ${currency} crédités au compte de ${repairClient?.name}`;
 
       const log: RepairLog = { date: now, status: 'livre', note, by: currentUserLabel };
@@ -1522,7 +1548,8 @@ export function RepairDetail({
           const currentClientDebt = clientSnap.data().debt || 0;
           tx.update(doc(db, 'repairs', repair.id), {
             status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-            total: newTotal, paid: newPaid, debt: 0, discount, logs,
+            total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
+            paid: newPaid, debt: 0, discount: actualDiscount, logs,
           });
           tx.update(clientRef, { debt: currentClientDebt + restAfterPaidNow });
           tx.set(doc(collection(db, 'client_debts')), {
@@ -1538,7 +1565,8 @@ export function RepairDetail({
       } else {
         await updateDoc(doc(db, 'repairs', repair.id), {
           status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-          total: newTotal, paid: newPaid, debt: 0, discount, logs,
+          total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
+          paid: newPaid, debt: 0, discount: actualDiscount, logs,
         });
       }
 

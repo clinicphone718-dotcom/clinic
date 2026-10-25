@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import PDFDocument from 'pdfkit';
+import { getInvoiceTotals } from './src/lib/financial.ts';
 
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,21 +54,27 @@ function pdfApiPlugin(environment: Record<string, string>): Plugin {
               invoice.items.forEach((item: any) => {
                 const name = String(item?.name || '').substring(0, 15).padEnd(16);
                 const quantity = String(item?.quantity || 1).padStart(3);
-                const price = (Number(item?.price) || 0).toFixed(2).padStart(7);
-                const total = (Number(item?.total) || 0).toFixed(2).padStart(7);
+                const price = (Number(item?.price) || 0).toFixed(3).padStart(8);
+                const total = (Number(item?.total) || 0).toFixed(3).padStart(8);
                 document.text(`${name} ${quantity} ${price} ${total}`);
               });
             }
             document.text('------------------------------------------');
             document.moveDown();
-            const total = Number(invoice.total) || 0;
-            const tva = Number(invoice.tva) || 0;
-            if (tva > 0) {
-              document.fontSize(10).text(`Sous-total: ${(total - tva).toFixed(2)} DT`, { align: 'right' });
-              document.fontSize(10).text(`TVA: ${tva.toFixed(2)} DT`, { align: 'right' });
+            const totals = getInvoiceTotals(invoice);
+            const total = totals.total;
+            const tva = totals.tva;
+            if (totals.tvaVisible && tva > 0) {
+              document.fontSize(10).text(`Sous-total: ${totals.subtotal.toFixed(3)} DT`, { align: 'right' });
+              if (totals.discount > 0) {
+                document.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: 'right' });
+              }
+              document.fontSize(10).text(`TVA: ${tva.toFixed(3)} DT`, { align: 'right' });
+            } else if (totals.discount > 0) {
+              document.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: 'right' });
             }
-            document.fontSize(12).font('Helvetica-Bold').text(`TOTAL GENERAL: ${total.toFixed(2)} DT`, { align: 'right' });
-            document.fontSize(10).font('Helvetica').text(`Payé: ${(Number(invoice.paid) || 0).toFixed(2)} DT`, { align: 'right' });
+            document.fontSize(12).font('Helvetica-Bold').text(`TOTAL GENERAL: ${total.toFixed(3)} DT`, { align: 'right' });
+            document.fontSize(10).font('Helvetica').text(`Payé: ${(Number(invoice.paid) || 0).toFixed(3)} DT`, { align: 'right' });
             if ((Number(invoice.debt) || 0) > 0) {
               document.fillColor('red').text(`Reste (Dette): ${Number(invoice.debt).toFixed(2)} DT`, { align: 'right' });
             }

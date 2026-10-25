@@ -45,6 +45,9 @@ export interface Sale {
   clientId?: string;
   clientName?: string;
   total: number;
+  subtotal?: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
   paid: number;
   debt: number;
   tva: number;
@@ -64,9 +67,12 @@ export interface Invoice {
   clientPhone?: string;
   clientAddress?: string;
   total: number;
+  subtotal?: number;
   paid: number;
   debt: number;
   tva: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
   discount?: number;
   date: any;
   items: SaleItem[];
@@ -219,6 +225,10 @@ export interface Repair {
   laborCost?: number;
   parts: RepairPart[];
   total: number;
+  subtotal?: number;
+  tva?: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
   paid: number;
   debt: number;
   discount?: number;

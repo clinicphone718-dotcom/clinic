@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp, runTransaction, getDoc, getDocs, where, getDocFromServer } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
+import { computeTotals } from '../lib/financial';
 import { Product, Client, SaleItem, Sale, Invoice, Category, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, ShoppingCart, Trash2, Plus, Minus, User, CreditCard, CheckCircle, AlertCircle, Printer, X, FileText, Barcode, Filter, Tag, Coins, Percent, TrendingUp, UserCheck, Flame } from 'lucide-react';
@@ -474,18 +475,12 @@ export default function POS({ userProfile }: POSProps) {
     ));
   };
 
-  const subtotal = useMemo(() => {
-    const rawSum = cart.reduce((sum, item) => sum + item.total, 0);
-    return Math.round(rawSum * 1000) / 1000;
-  }, [cart]);
   const currency = storeSettings?.currency || 'DT';
-  const tvaRate = storeSettings?.tvaEnabled !== false ? (storeSettings?.tva || 19) / 100 : 0;
-  const tvaAmount = Math.round(subtotal * tvaRate * 1000) / 1000;
-
-  const cartTotal = useMemo(() => {
-    const totalWithTva = subtotal + tvaAmount;
-    return Math.max(0, Math.round((totalWithTva - discount) * 1000) / 1000);
-  }, [subtotal, tvaAmount, discount]);
+  const financialTotals = useMemo(
+    () => computeTotals(cart, discount, storeSettings),
+    [cart, discount, storeSettings?.tvaEnabled, storeSettings?.tva],
+  );
+  const { subtotal, tva: tvaAmount, total: cartTotal } = financialTotals;
 
   useEffect(() => {
     setReceivedCash(cartTotal);
@@ -713,6 +708,10 @@ export default function POS({ userProfile }: POSProps) {
             paid: effPaid,
             debt: effDebt,
             tva: tvaAmount,
+            subtotal: financialTotals.subtotal,
+            discount: financialTotals.discount,
+            tvaEnabled: storeSettings?.tvaEnabled === true,
+            tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             items: cart,
             invoiceId: invoiceRef.id,
             ownerId,
@@ -732,6 +731,10 @@ export default function POS({ userProfile }: POSProps) {
             paid: effPaid,
             debt: effDebt,
             tva: tvaAmount,
+            subtotal: financialTotals.subtotal,
+            discount: financialTotals.discount,
+            tvaEnabled: storeSettings?.tvaEnabled === true,
+            tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             date: serverTimestamp(),
             items: cart,
             ownerId,
@@ -1277,7 +1280,7 @@ export default function POS({ userProfile }: POSProps) {
                   <div className="flex items-center justify-between text-indigo-300 font-black text-[9px] uppercase tracking-widest pb-1 border-b border-slate-800">
                     <span>Total Net à payer</span>
                     <span className="bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/20 text-[8px]">
-                      {storeSettings?.tvaEnabled !== false ? `TVA (${storeSettings?.tva || 19}%)` : 'Hors taxe'}
+                      {storeSettings?.tvaEnabled === true ? `TVA (${storeSettings.tva || 0}%)` : 'Hors taxe'}
                     </span>
                   </div>
                   <div className="flex justify-center items-center gap-1 mt-1.5">

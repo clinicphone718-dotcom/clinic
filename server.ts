@@ -10,6 +10,7 @@ import { getAuth } from "firebase-admin/auth";
 import fs from "fs";
 import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
+import { getInvoiceTotals } from "./src/lib/financial";
 
 const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
 let firebaseConfig: Record<string, unknown> = {};
@@ -375,8 +376,8 @@ async function startServer() {
         invoice.items.forEach((item: any) => {
           const name = String(item?.name || "").substring(0, 15).padEnd(16);
           const qty = String(item?.quantity || 1).padStart(3);
-          const price = num(item?.price).toFixed(2).padStart(7);
-          const total = num(item?.total).toFixed(2).padStart(7);
+          const price = num(item?.price).toFixed(3).padStart(8);
+          const total = num(item?.total).toFixed(3).padStart(8);
           doc.text(`${name} ${qty} ${price} ${total}`);
         });
       }
@@ -385,17 +386,22 @@ async function startServer() {
       doc.moveDown();
 
       // Totals
-      const total = num(invoice.total);
-      const tva = num(invoice.tva);
+      const totals = getInvoiceTotals(invoice);
+      const total = totals.total;
+      const tva = totals.tva;
       const paid = num(invoice.paid);
       const debt = num(invoice.debt);
-      const subtotal = total - tva;
-      if (tva > 0) {
-        doc.fontSize(10).text(`Sous-total: ${subtotal.toFixed(2)} DT`, { align: "right" });
-        doc.fontSize(10).text(`TVA: ${tva.toFixed(2)} DT`, { align: "right" });
+      if (totals.tvaVisible && tva > 0) {
+        doc.fontSize(10).text(`Sous-total: ${totals.subtotal.toFixed(3)} DT`, { align: "right" });
+        if (totals.discount > 0) {
+          doc.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: "right" });
+        }
+        doc.fontSize(10).text(`TVA: ${tva.toFixed(3)} DT`, { align: "right" });
+      } else if (totals.discount > 0) {
+        doc.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: "right" });
       }
-      doc.fontSize(12).font("Helvetica-Bold").text(`TOTAL GENERAL: ${total.toFixed(2)} DT`, { align: "right" });
-      doc.fontSize(10).font("Helvetica").text(`Payé: ${paid.toFixed(2)} DT`, { align: "right" });
+      doc.fontSize(12).font("Helvetica-Bold").text(`TOTAL GENERAL: ${total.toFixed(3)} DT`, { align: "right" });
+      doc.fontSize(10).font("Helvetica").text(`Payé: ${paid.toFixed(3)} DT`, { align: "right" });
       if (debt > 0) {
         doc.fillColor("red").text(`Reste (Dette): ${debt.toFixed(2)} DT`, { align: "right" });
       }

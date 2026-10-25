@@ -4,6 +4,7 @@ import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, ser
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
+import { computeTotals } from '../lib/financial';
 import { Invoice, Product, Client, SaleItem, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, FileText, Eye, X, Printer, Download, User, Calendar, ShoppingBag, Plus, Trash2, Minus, AlertCircle, CheckCircle2 } from 'lucide-react';
@@ -159,13 +160,11 @@ export default function Invoices({ userProfile }: InvoicesProps) {
     setCart(prev => prev.filter(item => item.productId !== productId));
   };
 
-  const subtotal = useMemo(() => {
-    const rawSum = cart.reduce((sum, item) => sum + item.total, 0);
-    return Math.round(rawSum * 1000) / 1000;
-  }, [cart]);
-  const tvaRate = storeSettings?.tvaEnabled !== false ? (storeSettings?.tva || 19) / 100 : 0;
-  const tvaAmount = Math.round(subtotal * tvaRate * 1000) / 1000;
-  const cartTotal = Math.round((subtotal + tvaAmount) * 1000) / 1000;
+  const financialTotals = useMemo(
+    () => computeTotals(cart, 0, storeSettings),
+    [cart, storeSettings?.tvaEnabled, storeSettings?.tva],
+  );
+  const { subtotal, tva: tvaAmount, total: cartTotal } = financialTotals;
 
   useEffect(() => {
     setPaidAmount(cartTotal);
@@ -273,6 +272,10 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           paid: paidAmount,
           debt: remainingDebt,
           tva: tvaAmount,
+          subtotal: financialTotals.subtotal,
+          discount: financialTotals.discount,
+          tvaEnabled: storeSettings?.tvaEnabled === true,
+          tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
           items: cart,
           invoiceId: invoiceRef.id,
           ownerId,
@@ -292,6 +295,10 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           paid: paidAmount,
           debt: remainingDebt,
           tva: tvaAmount,
+          subtotal: financialTotals.subtotal,
+          discount: financialTotals.discount,
+          tvaEnabled: storeSettings?.tvaEnabled === true,
+          tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
           date: serverTimestamp(),
           items: cart,
           ownerId,
@@ -592,15 +599,15 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
                 <div className="p-4 sm:p-6 bg-gray-50 border-t border-green-800 space-y-4">
                   <div className="space-y-1.5">
-                    {storeSettings?.tvaEnabled !== false && (
+                    {storeSettings?.tvaEnabled === true && (
                       <div className="flex justify-between text-xs sm:text-sm">
                         <span className="text-gray-500 font-semibold">Sous-total</span>
                         <span className="font-mono font-bold">{subtotal.toFixed(3)} {storeSettings?.currency || 'DT'}</span>
                       </div>
                     )}
-                    {storeSettings?.tvaEnabled !== false && (
+                    {storeSettings?.tvaEnabled === true && (
                       <div className="flex justify-between text-xs sm:text-sm">
-                        <span className="text-gray-500 font-semibold">TVA ({storeSettings?.tva || 19}%)</span>
+                        <span className="text-gray-500 font-semibold">TVA ({storeSettings?.tva || 0}%)</span>
                         <span className="font-mono font-bold">{tvaAmount.toFixed(3)} {storeSettings?.currency || 'DT'}</span>
                       </div>
                     )}
@@ -758,15 +765,15 @@ export default function Invoices({ userProfile }: InvoicesProps) {
               </div>
 
               <div className="bg-gray-900 text-white p-5 sm:p-8 rounded-3xl space-y-3 sm:space-y-4 shadow-xl shadow-gray-900/20">
-                {selectedInvoice.tva > 0 && (
+                {storeSettings?.tvaEnabled === true && selectedInvoice.tva > 0 && (
                   <div className="flex justify-between items-center opacity-70">
                     <span className="text-xs uppercase tracking-widest font-bold">Sous-total</span>
-                    <span className="font-mono text-xs sm:text-sm">{(selectedInvoice.total - selectedInvoice.tva).toFixed(3)} {storeSettings?.currency || 'DT'}</span>
+                    <span className="font-mono text-xs sm:text-sm">{(selectedInvoice.subtotal ?? selectedInvoice.total - selectedInvoice.tva).toFixed(3)} {storeSettings?.currency || 'DT'}</span>
                   </div>
                 )}
-                {selectedInvoice.tva > 0 && (
+                {storeSettings?.tvaEnabled === true && selectedInvoice.tva > 0 && (
                   <div className="flex justify-between items-center opacity-70">
-                    <span className="text-xs uppercase tracking-widest font-bold">TVA ({storeSettings?.tva || 19}%)</span>
+                    <span className="text-xs uppercase tracking-widest font-bold">TVA ({storeSettings?.tva || 0}%)</span>
                     <span className="font-mono text-xs sm:text-sm">{selectedInvoice.tva.toFixed(3)} {storeSettings?.currency || 'DT'}</span>
                   </div>
                 )}
