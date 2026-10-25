@@ -9,14 +9,18 @@ import { handleFirestoreError, OperationType } from '../App';
 import { Search, ShoppingCart, Trash2, Plus, Minus, User, CreditCard, CheckCircle, AlertCircle, Printer, X, FileText, Barcode, Filter, Tag, Coins, Percent, TrendingUp, UserCheck, Flame } from 'lucide-react';
 import { cn, decodeAzertyBarcode } from '../lib/utils';
 import { format } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 import { PrintableTicket } from './PrintableTicket';
 import { can } from '../lib/permissions';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface POSProps {
   userProfile: UserProfile | null;
 }
 
 export default function POS({ userProfile }: POSProps) {
+  const navigate = useNavigate();
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
   const isAdmin = userProfile?.role === 'admin';
   const canViewBuyPrice = can(userProfile, 'products', 'viewBuyPrice');
@@ -552,6 +556,12 @@ export default function POS({ userProfile }: POSProps) {
 
   const validateSale = async (isCredit: boolean = false, creditPaid: number = 0) => {
     if (cart.length === 0) return;
+    if (!cashSession) {
+      setError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant de vendre.');
+      return;
+    }
 
     // Crédit : un client enregistré est obligatoire (impossible pour un client de passage)
     if (isCredit && !selectedClient) {
@@ -618,6 +628,11 @@ export default function POS({ userProfile }: POSProps) {
           if (selectedClient && effDebt > 0) {
             clientSnap = await transaction.get(doc(db, 'clients', selectedClient.id));
           }
+          const activeCashSession = await requireOpenCashSession(
+            transaction,
+            userProfile?.uid || auth.currentUser?.uid || '',
+            ownerId || '',
+          );
 
           // 2. LOGIC & VALIDATION
           let nextNum = 1;
@@ -671,6 +686,10 @@ export default function POS({ userProfile }: POSProps) {
           const invoiceRef = doc(collection(db, 'invoices'));
           committedSaleId = saleRef.id;
           transaction.set(counterRef, { lastNum: nextNum }, { merge: true });
+          addCashSessionTotals(transaction, activeCashSession, {
+            sales: cartTotal,
+            cash: effPaid,
+          });
 
           for (const update of stockUpdates) {
             const movementRef = doc(db, 'stock_movements', `product_${update.productId}_v${update.version}`);
@@ -717,6 +736,7 @@ export default function POS({ userProfile }: POSProps) {
             tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             items: cart,
             invoiceId: invoiceRef.id,
+            sessionId: activeCashSession.id,
             ownerId,
             userId: userProfile?.uid || ownerId
           };
@@ -740,6 +760,7 @@ export default function POS({ userProfile }: POSProps) {
             tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             date: serverTimestamp(),
             items: cart,
+            sessionId: activeCashSession.id,
             ownerId,
             userId: userProfile?.uid || ownerId
           };
@@ -779,6 +800,12 @@ export default function POS({ userProfile }: POSProps) {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:h-[calc(100vh-130px)] min-h-0 relative">
+      {!cashSession && (
+        <div className="order-0 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 lg:col-span-12">
+          <span>{cashSessionLoading ? 'Vérification de la caisse…' : 'Aucune session ouverte : la vente est bloquée.'}</span>
+          {!cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="shrink-0 rounded-lg bg-amber-700 px-3 py-2 text-xs font-black text-white">Ouvrir la caisse</button>}
+        </div>
+      )}
       {/* Hidden printable ticket for POS - Render outside #root using Portal */}
       {createPortal(
         <div className="print-container">
@@ -1474,6 +1501,7 @@ export default function POS({ userProfile }: POSProps) {
               <div className="p-2 bg-rose-950/40 border border-rose-900/60 rounded-lg flex items-center gap-1.5 text-rose-300 text-[10px] font-semibold">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
                 <span className="leading-tight">{error}</span>
+                {!cashSession && !cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="ml-auto rounded bg-rose-700 px-2 py-1 text-white">Ouvrir</button>}
               </div>
             )}
           </div>

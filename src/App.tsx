@@ -41,6 +41,7 @@ const NAV_SECTIONS = [
     items: [
       { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
       { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
+      { id: 'invoices', name: 'Clôture de caisse', path: '/cash-session', icon: CircleDollarSign },
       { id: 'sales', name: 'Historique', path: '/sales', icon: History },
       { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
     ],
@@ -111,6 +112,7 @@ import Notes from './components/Notes';
 import Repairs from './components/Repairs';
 import Parts from './components/Parts';
 import Expenses from './components/Expenses';
+import CashSession from './components/CashSession';
 import { StartupProvider } from './components/StartupProvider';
 
 // Error Handling
@@ -855,6 +857,7 @@ export default function App() {
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/clients" element={hasMenuAccess(userProfile, 'clients') ? <Clients userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/pos" element={hasMenuAccess(userProfile, 'pos') ? <POS userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/cash-session" element={hasMenuAccess(userProfile, 'pos') || hasMenuAccess(userProfile, 'invoices') ? <CashSession userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/sales" element={hasMenuAccess(userProfile, 'sales') ? <Sales userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/invoices" element={hasMenuAccess(userProfile, 'invoices') ? <Invoices userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/repairs" element={hasMenuAccess(userProfile, 'reparation') ? <Repairs userProfile={userProfile} /> : <Navigate to="/" replace />} />

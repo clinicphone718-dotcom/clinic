@@ -22,6 +22,7 @@ import { format } from 'date-fns';
 import { RepairTicket } from './RepairTicket';
 import { can } from '../lib/permissions';
 import { apiFetch } from '../lib/api';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface RepairsProps {
   userProfile: UserProfile | null;
@@ -838,6 +839,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           settings={settings}
           currency={currency}
           ownerId={ownerId}
+          userProfile={userProfile}
           canCash={canCash}
           canEditProductSellPrice={can(userProfile, 'products', 'editSellPrice')}
           canEditPartSellPrice={can(userProfile, 'pieces', 'editSellPrice')}
@@ -859,6 +861,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           currentUserLabel={currentUserLabel}
           settings={settings}
           ownerId={ownerId}
+          userProfile={userProfile}
           clients={clients}
           onEdit={() => { setEditingRepair(detailRepair); setDetailRepair(null); setIsFormOpen(true); }}
           onClose={() => setDetailRepair(null)}
@@ -875,7 +878,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
 //  FORMULAIRE DE RÉPARATION
 // ============================================================
 export function RepairForm({
-  repair, clients, products, settings, currency, ownerId, currentUserLabel, canCash,
+  repair, clients, products, settings, currency, ownerId, currentUserLabel, canCash, userProfile,
   canEditProductSellPrice, canEditPartSellPrice,
   generateRepairNumber, onClose, onSaved, onError
 }: {
@@ -885,6 +888,7 @@ export function RepairForm({
   settings: StoreSettings | null;
   currency: string;
   ownerId: string;
+  userProfile: UserProfile | null;
   currentUserLabel: string;
   canCash: boolean;
   canEditProductSellPrice: boolean;
@@ -894,6 +898,7 @@ export function RepairForm({
   onSaved: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const isEdit = !!repair;
   const [clientId, setClientId] = useState(repair?.clientId || '');
   const [clientSearch, setClientSearch] = useState('');
@@ -1053,6 +1058,12 @@ export function RepairForm({
       showError("La livraison et l'encaissement sont réservés à l'administrateur ou à la vendeuse.");
       return;
     }
+    if (!isEdit && paidValue > 0 && !cashSession) {
+      showError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant d’encaisser cette réparation.');
+      return;
+    }
     if (!deviceBrand.trim()) { showError("Indiquez la marque de l'appareil."); return; }
     if (!deviceModel.trim()) { showError("Indiquez le modèle de l'appareil."); return; }
     setSaving(true);
@@ -1146,6 +1157,10 @@ export function RepairForm({
           if (!repairSnap.exists()) throw new Error('La réparation n’existe plus.');
           const current = repairSnap.data();
           if ((current.ownerId || ownerId) !== ownerId) throw new Error('Cette réparation appartient à un autre magasin.');
+          const additionalPaid = Math.max(0, (Number(payload.paid) || 0) - (Number(current.paid) || 0));
+          const activeSession = additionalPaid > 0
+            ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+            : null;
           const nextVersion = await applyRepairStockChanges(tx, {
             repairId: repair.id,
             repairNumber: repair.number,
@@ -1156,7 +1171,17 @@ export function RepairForm({
             movementType: 'repair_part_adjustment',
             userLabel: currentUserLabel,
           });
-          tx.update(repairRef, { ...payload, stockVersion: nextVersion });
+          tx.update(repairRef, {
+            ...payload,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
+            stockVersion: nextVersion,
+          });
+          if (activeSession) {
+            addCashSessionTotals(tx, activeSession, {
+              repairsCollected: additionalPaid,
+              repairsCollectedCash: additionalPaid,
+            });
+          }
         });
         let message = `Réparation ${repair.number} mise à jour.`;
         try {
@@ -1173,6 +1198,9 @@ export function RepairForm({
           if (existingRepair.exists()) {
             throw new Error('Cette demande a déjà été enregistrée. Rechargez la liste des réparations.');
           }
+          const activeSession = paidValue > 0
+            ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+            : null;
           const nextVersion = await applyRepairStockChanges(tx, {
             repairId: repairRef.id,
             repairNumber: number,
@@ -1183,7 +1211,19 @@ export function RepairForm({
             movementType: 'repair_part_adjustment',
             userLabel: currentUserLabel,
           });
-          tx.set(repairRef, { ...payload, number, stockVersion: nextVersion, date: serverTimestamp() });
+          tx.set(repairRef, {
+            ...payload,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
+            number,
+            stockVersion: nextVersion,
+            date: serverTimestamp(),
+          });
+          if (activeSession) {
+            addCashSessionTotals(tx, activeSession, {
+              repairsCollected: paidValue,
+              repairsCollectedCash: paidValue,
+            });
+          }
         });
         try {
           await apiFetch(`/financial/repairs/${encodeURIComponent(repairRef.id)}/costs`, { method: 'POST' });
@@ -1453,7 +1493,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', full = fals
 //  DÉTAIL RÉPARATION + suivi + changement rapide de statut
 // ============================================================
 export function RepairDetail({
-  repair, currency, canDelete, canCash, currentUserLabel, settings, ownerId, clients,
+  repair, currency, canDelete, canCash, currentUserLabel, settings, ownerId, clients, userProfile,
   onEdit, onClose, onDelete, onError, onSuccess
 }: {
   repair: Repair;
@@ -1463,6 +1503,7 @@ export function RepairDetail({
   currentUserLabel: string;
   settings: StoreSettings | null;
   ownerId: string;
+  userProfile: UserProfile | null;
   clients: Client[];
   onEdit: () => void;
   onClose: () => void;
@@ -1470,6 +1511,7 @@ export function RepairDetail({
   onError: (m: string) => void;
   onSuccess: (m: string) => void;
 }) {
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [quickNote, setQuickNote] = useState('');
   const [updating, setUpdating] = useState(false);
   const [showDeliveryCaisse, setShowDeliveryCaisse] = useState(false);
@@ -1542,6 +1584,11 @@ export function RepairDetail({
   const confirmDelivery = async (paidNow: number, discount: number) => {
     setUpdating(true);
     try {
+      if (paidNow > 0 && !cashSession) {
+        throw new Error(cashSessionLoading
+          ? 'Vérification de la caisse en cours…'
+          : 'Aucune caisse ouverte. Ouvrez une session avant d’encaisser cette réparation.');
+      }
       const now = new Date().toISOString();
       const days = repair.warrantyDays || settings?.defaultWarrantyDays || 0;
       let warrantyUntil = repair.warrantyUntil;
@@ -1571,20 +1618,41 @@ export function RepairDetail({
       const log: RepairLog = { date: now, status: 'livre', note, by: currentUserLabel };
       const logs = [...(repair.logs || []), log];
 
-      if (restAfterPaidNow > 0) {
-        await runTransaction(db, async (tx) => {
-          const clientRef = doc(db, 'clients', repairClient!.id);
-          const clientSnap = await tx.get(clientRef);
-          if (!clientSnap.exists()) throw new Error('Client introuvable');
-          const currentClientDebt = clientSnap.data().debt || 0;
-          tx.update(doc(db, 'repairs', repair.id), {
-            status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-            total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
-            tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
-            tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
-            tvaOptIn: repair.tvaOptIn === true,
-            paid: newPaid, debt: 0, discount: actualDiscount, logs,
-          });
+      await runTransaction(db, async tx => {
+        const repairRef = doc(db, 'repairs', repair.id);
+        const repairSnapshot = await tx.get(repairRef);
+        if (!repairSnapshot.exists()) throw new Error('La réparation n’existe plus.');
+        const currentRepair = repairSnapshot.data();
+        if (currentRepair.status === 'livre' || Number(currentRepair.paid || 0) !== Number(repair.paid || 0)) {
+          throw new Error('La réparation a été modifiée. Rechargez-la avant de la livrer.');
+        }
+        const activeSession = paidNow > 0
+          ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+          : null;
+        const clientRef = restAfterPaidNow > 0 && repairClient
+          ? doc(db, 'clients', repairClient.id)
+          : null;
+        const clientSnapshot = clientRef ? await tx.get(clientRef) : null;
+        if (clientSnapshot && !clientSnapshot.exists()) throw new Error('Client introuvable.');
+
+        tx.update(repairRef, {
+          status: 'livre',
+          deliveredAt: now,
+          warrantyUntil: warrantyUntil || null,
+          total: newTotal,
+          subtotal: deliveryTotals.subtotal,
+          tva: deliveryTotals.tva,
+          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+          tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
+          tvaOptIn: repair.tvaOptIn === true,
+          paid: newPaid,
+          debt: 0,
+          discount: actualDiscount,
+          logs,
+          ...(activeSession ? { sessionId: activeSession.id } : {}),
+        });
+        if (clientRef && clientSnapshot) {
+          const currentClientDebt = Number(clientSnapshot.data().debt) || 0;
           tx.update(clientRef, { debt: currentClientDebt + restAfterPaidNow });
           tx.set(doc(collection(db, 'client_debts')), {
             clientId: repairClient!.id,
@@ -1594,18 +1662,16 @@ export function RepairDetail({
             date: serverTimestamp(),
             by: currentUserLabel,
             ownerId,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
           });
-        });
-      } else {
-        await updateDoc(doc(db, 'repairs', repair.id), {
-          status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-          total: newTotal, subtotal: deliveryTotals.subtotal, tva: deliveryTotals.tva,
-          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
-          tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
-          tvaOptIn: repair.tvaOptIn === true,
-          paid: newPaid, debt: 0, discount: actualDiscount, logs,
-        });
-      }
+        }
+        if (activeSession) {
+          addCashSessionTotals(tx, activeSession, {
+            repairsCollected: paidNow,
+            repairsCollectedCash: paidNow,
+          });
+        }
+      });
 
       setShowDeliveryCaisse(false);
       onSuccess('Réparation livrée et encaissement enregistré.');

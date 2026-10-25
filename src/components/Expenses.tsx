@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { addDoc, collection, onSnapshot, query, serverTimestamp, Timestamp, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, where } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
 import { CircleDollarSign, Search } from 'lucide-react';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
+import { addCashSessionTotals, cashSessionOwnerId, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface Expense {
   id: string;
@@ -26,7 +28,9 @@ function toDate(value: Expense['date']): Date {
 }
 
 export default function Expenses({ userProfile }: { userProfile: UserProfile | null }) {
-  const ownerId = userProfile?.role === 'admin' ? userProfile.uid : userProfile?.ownerId;
+  const navigate = useNavigate();
+  const ownerId = cashSessionOwnerId(userProfile);
+  const { session, loading: cashSessionLoading } = useCashSession(userProfile);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -101,15 +105,25 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
     }
     setSaving(true);
     try {
-      await addDoc(collection(db, 'expenses'), {
-        ownerId,
-        date: Timestamp.fromDate(new Date(`${date}T12:00:00`)),
-        label: label.trim(),
-        category,
-        amount: Math.round(parsedAmount * 1000) / 1000,
-        mode,
-        createdAt: serverTimestamp(),
-        createdBy: userProfile.uid,
+      const expenseRef = doc(collection(db, 'expenses'));
+      await runTransaction(db, async transaction => {
+        const activeSession = await requireOpenCashSession(transaction, userProfile.uid, ownerId);
+        transaction.set(expenseRef, {
+          ownerId,
+          date: Timestamp.fromDate(new Date(`${date}T12:00:00`)),
+          label: label.trim(),
+          category,
+          amount: Math.round(parsedAmount * 1000) / 1000,
+          mode,
+          sessionId: activeSession.id,
+          createdAt: serverTimestamp(),
+          createdBy: userProfile.uid,
+        });
+        const amountToRecord = Math.round(parsedAmount * 1000) / 1000;
+        addCashSessionTotals(transaction, activeSession, {
+          expenses: amountToRecord,
+          expensesCash: mode === 'Espèces' ? amountToRecord : 0,
+        });
       });
       setLabel('');
       setAmount('');
@@ -139,6 +153,11 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
         </div>
       </header>
 
+      {!session && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+        <span>{cashSessionLoading ? 'Vérification de la caisse…' : 'Une caisse ouverte est nécessaire pour enregistrer une dépense.'}</span>
+        {!cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-black text-white">Ouvrir la caisse</button>}
+      </div>}
+
       <form onSubmit={submit} className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-6">
         <label className="md:col-span-2">
           <span className="mb-1 block text-xs font-bold text-slate-600">Libellé</span>
@@ -165,7 +184,7 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
           </select>
         </label>
         <div className="flex items-end md:col-span-2">
-          <button type="submit" disabled={saving} className="min-h-11 w-full rounded-xl bg-indigo-600 px-4 font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+          <button type="submit" disabled={saving || !session} className="min-h-11 w-full rounded-xl bg-indigo-600 px-4 font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
             {saving ? 'Enregistrement…' : 'Enregistrer la dépense'}
           </button>
         </div>

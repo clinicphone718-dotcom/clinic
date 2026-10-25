@@ -55,6 +55,7 @@ export interface Sale {
   invoiceId?: string;
   items: SaleItem[];
   ownerId?: string;
+  sessionId?: string;
 }
 
 export interface Invoice {
@@ -77,6 +78,32 @@ export interface Invoice {
   date: any;
   items: SaleItem[];
   ownerId?: string;
+  sessionId?: string;
+}
+
+export interface CashSessionTotals {
+  sales: number;
+  cash: number;
+  debtsCollected: number;
+  debtsCollectedCash: number;
+  repairsCollected: number;
+  repairsCollectedCash: number;
+  expenses: number;
+  expensesCash: number;
+}
+
+export interface CashSession {
+  id: string;
+  ownerId: string;
+  openedBy: string;
+  openedAt: any;
+  openingFloat: number;
+  status: 'open' | 'closed';
+  closedAt?: any;
+  countedCash?: number;
+  expectedCash?: number;
+  difference?: number;
+  totals: CashSessionTotals;
 }
 
 export interface UserProfile {
@@ -240,4 +267,5 @@ export interface Repair {
   logs: RepairLog[];
   ownerId?: string;
   costsSeparated?: boolean;
+  sessionId?: string;
 }

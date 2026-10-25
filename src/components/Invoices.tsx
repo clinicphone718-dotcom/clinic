@@ -14,6 +14,7 @@ import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { PrintableTicket } from './PrintableTicket';
 import { where } from 'firebase/firestore';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface InvoicesProps {
   userProfile: UserProfile | null;
@@ -21,6 +22,7 @@ interface InvoicesProps {
 
 export default function Invoices({ userProfile }: InvoicesProps) {
   const navigate = useNavigate();
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -182,6 +184,12 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
   const validateSale = async () => {
     if (cart.length === 0) return;
+    if (!cashSession) {
+      setError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant de créer une facture.');
+      return;
+    }
     setIsProcessing(true);
     setError(null);
 
@@ -217,6 +225,11 @@ export default function Invoices({ userProfile }: InvoicesProps) {
         if (selectedClient && remainingDebt > 0) {
           clientSnap = await transaction.get(doc(db, 'clients', selectedClient.id));
         }
+        const activeCashSession = await requireOpenCashSession(
+          transaction,
+          userProfile?.uid || auth.currentUser?.uid || '',
+          ownerId || '',
+        );
 
         // 2. LOGIC & VALIDATION
         let nextNum = 1;
@@ -254,6 +267,10 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
         // 3. ALL WRITES LAST
         transaction.set(counterRef, { lastNum: nextNum }, { merge: true });
+        addCashSessionTotals(transaction, activeCashSession, {
+          sales: cartTotal,
+          cash: paidAmount,
+        });
 
         for (const update of stockUpdates) {
           transaction.update(update.ref, { stock: update.newStock });
@@ -278,6 +295,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
           items: cart,
           invoiceId: invoiceRef.id,
+          sessionId: activeCashSession.id,
           ownerId,
           userId: userProfile?.uid || ownerId
         };
@@ -301,6 +319,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
           date: serverTimestamp(),
           items: cart,
+          sessionId: activeCashSession.id,
           ownerId,
           userId: userProfile?.uid || ownerId
         };
@@ -674,6 +693,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
                     <div className="p-3 bg-red-50 rounded-xl border border-red-100 flex items-center gap-2 text-red-700">
                       <AlertCircle className="w-4 h-4 shrink-0" />
                       <span className="text-xs font-bold">{error}</span>
+                      {!cashSession && !cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="ml-auto rounded-lg bg-red-700 px-3 py-2 text-xs font-black text-white">Ouvrir la caisse</button>}
                     </div>
                   )}
 

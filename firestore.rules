@@ -82,6 +82,36 @@ service cloud.firestore {
         userData().get('role', '') == 'admin' &&
         userData().get('ownerId', request.auth.uid) == request.auth.uid;
     }
+    function hasOpenCashSession(sessionId, ownerId) {
+      let lockPath = /databases/$(database)/documents/cash_session_locks/$(request.auth.uid);
+      let sessionPath = /databases/$(database)/documents/cash_sessions/$(sessionId);
+      return isAuthenticated() &&
+        sessionId is string && sessionId.size() > 0 &&
+        exists(lockPath) &&
+        get(lockPath).data.get('sessionId', '') == sessionId &&
+        exists(sessionPath) &&
+        get(sessionPath).data.get('openedBy', '') == request.auth.uid &&
+        get(sessionPath).data.get('ownerId', '') == ownerId &&
+        get(sessionPath).data.get('status', '') == 'open';
+    }
+    function validCashSessionTotals(totals) {
+      return totals.keys().hasAll([
+          'sales', 'cash', 'debtsCollected', 'debtsCollectedCash',
+          'repairsCollected', 'repairsCollectedCash', 'expenses', 'expensesCash'
+        ]) &&
+        totals.keys().hasOnly([
+          'sales', 'cash', 'debtsCollected', 'debtsCollectedCash',
+          'repairsCollected', 'repairsCollectedCash', 'expenses', 'expensesCash'
+        ]) &&
+        totals.sales is number && totals.sales >= 0 &&
+        totals.cash is number && totals.cash >= 0 &&
+        totals.debtsCollected is number && totals.debtsCollected >= 0 &&
+        totals.debtsCollectedCash is number && totals.debtsCollectedCash >= 0 &&
+        totals.repairsCollected is number && totals.repairsCollected >= 0 &&
+        totals.repairsCollectedCash is number && totals.repairsCollectedCash >= 0 &&
+        totals.expenses is number && totals.expenses >= 0 &&
+        totals.expensesCash is number && totals.expensesCash >= 0;
+    }
     function hasMenu(menu) {
       return isAuthenticated() && (
         isAdmin() ||
@@ -488,7 +518,8 @@ service cloud.firestore {
       allow read: if hasAccess(resource.data.get('ownerId', '')) &&
         hasAnyMenu(['sales', 'pos', 'products', 'dashboard', 'clients', 'settings']);
       allow create: if hasAccess(request.resource.data.ownerId) &&
-        hasAnyMenu(['pos', 'invoices']);
+        hasAnyMenu(['pos', 'invoices']) &&
+        hasOpenCashSession(request.resource.data.get('sessionId', ''), request.resource.data.ownerId);
       allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
         hasAnyMenu(['sales', 'clients', 'settings']);
       allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
@@ -506,7 +537,8 @@ service cloud.firestore {
         request.resource.data.keys().hasOnly([
           'ownerId', 'date', 'label', 'category', 'amount', 'mode', 'createdAt', 'createdBy', 'sessionId'
         ]) &&
-        request.resource.data.keys().hasAll(['ownerId', 'date', 'label', 'category', 'amount', 'mode']) &&
+        request.resource.data.keys().hasAll(['ownerId', 'date', 'label', 'category', 'amount', 'mode', 'sessionId']) &&
+        hasOpenCashSession(request.resource.data.sessionId, request.resource.data.ownerId) &&
         request.resource.data.date is timestamp &&
         request.resource.data.label is string &&
         request.resource.data.label.size() > 0 &&
@@ -521,7 +553,8 @@ service cloud.firestore {
       allow read: if hasAccess(resource.data.get('ownerId', '')) &&
         hasAnyMenu(['invoices', 'sales', 'clients', 'settings']);
       allow create: if hasAccess(request.resource.data.ownerId) &&
-        hasAnyMenu(['pos', 'invoices']);
+        hasAnyMenu(['pos', 'invoices']) &&
+        hasOpenCashSession(request.resource.data.get('sessionId', ''), request.resource.data.ownerId);
       allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
         hasAnyMenu(['invoices', 'clients']);
       allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
@@ -582,6 +615,65 @@ service cloud.firestore {
         isAdminRole();
     }
 
+    match /cash_sessions/{sessionId} {
+      allow read: if hasAccess(resource.data.get('ownerId', '')) &&
+        (isStoreOwnerAdmin(resource.data.get('ownerId', '')) ||
+         resource.data.get('openedBy', '') == request.auth.uid);
+      allow create: if isAuthenticated() &&
+        request.resource.data.keys().hasOnly([
+          'ownerId', 'openedBy', 'openedAt', 'openingFloat', 'status', 'totals'
+        ]) &&
+        request.resource.data.keys().hasAll([
+          'ownerId', 'openedBy', 'openedAt', 'openingFloat', 'status', 'totals'
+        ]) &&
+        hasAccess(request.resource.data.ownerId) &&
+        request.resource.data.openedBy == request.auth.uid &&
+        request.resource.data.openedAt is timestamp &&
+        request.resource.data.openingFloat is number &&
+        request.resource.data.openingFloat >= 0 &&
+        request.resource.data.status == 'open' &&
+        validCashSessionTotals(request.resource.data.totals);
+      allow update: if isAuthenticated() &&
+        resource.data.get('openedBy', '') == request.auth.uid &&
+        resource.data.get('status', '') == 'open' &&
+        request.resource.data.get('ownerId', '') == resource.data.get('ownerId', '') &&
+        request.resource.data.get('openedBy', '') == resource.data.get('openedBy', '') &&
+        request.resource.data.get('openingFloat', -1) == resource.data.get('openingFloat', -2) &&
+        (
+          (request.resource.data.get('status', '') == 'open' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totals']) &&
+           validCashSessionTotals(request.resource.data.totals)) ||
+          (request.resource.data.get('status', '') == 'closed' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'status', 'closedAt', 'countedCash', 'expectedCash', 'difference'
+           ]) &&
+           request.resource.data.closedAt is timestamp &&
+           request.resource.data.countedCash is number &&
+           request.resource.data.countedCash >= 0 &&
+           request.resource.data.expectedCash is number &&
+           request.resource.data.difference is number &&
+           request.resource.data.totals == resource.data.totals)
+        );
+      allow delete: if false;
+    }
+
+    match /cash_session_locks/{userId} {
+      allow read: if isAuthenticated() && userId == request.auth.uid;
+      allow create: if isAuthenticated() &&
+        userId == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['ownerId', 'sessionId']) &&
+        request.resource.data.keys().hasAll(['ownerId', 'sessionId']) &&
+        hasAccess(request.resource.data.ownerId) &&
+        existsAfter(/databases/$(database)/documents/cash_sessions/$(request.resource.data.sessionId)) &&
+        getAfter(/databases/$(database)/documents/cash_sessions/$(request.resource.data.sessionId)).data.get('openedBy', '') == request.auth.uid &&
+        getAfter(/databases/$(database)/documents/cash_sessions/$(request.resource.data.sessionId)).data.get('status', '') == 'open' &&
+        getAfter(/databases/$(database)/documents/cash_sessions/$(request.resource.data.sessionId)).data.get('ownerId', '') == request.resource.data.ownerId;
+      allow update: if false;
+      allow delete: if isAuthenticated() &&
+        userId == request.auth.uid &&
+        getAfter(/databases/$(database)/documents/cash_sessions/$(resource.data.sessionId)).data.get('status', '') == 'closed';
+    }
+
     // ---------- Réparations ----------
     match /repairs/{repairId} {
       // Transactional creates read their deterministic ticket id to make repeated
@@ -596,6 +688,8 @@ service cloud.firestore {
       // Création : le Technicien ne peut ni livrer ni encaisser
       allow create: if hasAccess(request.resource.data.ownerId) && hasMenu('reparation') && (
         request.resource.data.get('costsSeparated', false) == true &&
+        (request.resource.data.get('paid', 0) == 0 ||
+         hasOpenCashSession(request.resource.data.get('sessionId', ''), request.resource.data.ownerId)) &&
         (canCash() ||
          (request.resource.data.status != 'livre' && request.resource.data.get('paid', 0) == 0))
       );
@@ -603,7 +697,9 @@ service cloud.firestore {
       // Modification : sans droit de caisse, 'paid' et 'discount' restent figés
       // et le passage au statut 'livre' est refusé.
       allow update: if hasAccess(resource.data.ownerId) && hasMenu('reparation') &&
-        request.resource.data.ownerId == resource.data.ownerId && (
+        request.resource.data.ownerId == resource.data.ownerId &&
+        (request.resource.data.get('paid', 0) <= resource.data.get('paid', 0) ||
+         hasOpenCashSession(request.resource.data.get('sessionId', ''), request.resource.data.ownerId)) && (
           (isAdmin() || isAdminRole()) ||
           canCash() ||
           (request.resource.data.get('costsSeparated', false) == true && (
@@ -639,7 +735,9 @@ service cloud.firestore {
     // Dettes clients créées à la livraison d'une réparation
     match /client_debts/{debtId} {
       allow read: if hasAccess(resource.data.ownerId) && (canCash() || hasMenu('clients'));
-      allow create: if hasAccess(request.resource.data.ownerId) && canCash();
+      allow create: if hasAccess(request.resource.data.ownerId) && canCash() &&
+        (request.resource.data.get('type', '') != 'encaissement_dette' ||
+         hasOpenCashSession(request.resource.data.get('sessionId', ''), request.resource.data.ownerId));
       allow update, delete: if hasAccess(resource.data.ownerId) && canCash();
     }
 
