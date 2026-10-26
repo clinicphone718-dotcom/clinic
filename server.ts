@@ -71,7 +71,10 @@ const OTP_MAX_ATTEMPTS = 5;
 // Exposes the caller on res.locals (authUid, isSuperAdmin).
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const match = /^Bearer (.+)$/.exec(req.headers.authorization || "");
-  if (!match) return res.status(401).json({ error: "Authentification requise." });
+  if (!match) {
+    console.warn("Authorization denied: bearer token missing.");
+    return res.status(401).json({ error: "Authentification requise." });
+  }
   try {
     const decoded = await adminAuth.verifyIdToken(match[1]);
     res.locals.authUid = decoded.uid;
@@ -81,6 +84,7 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
       SUPER_ADMIN_EMAILS.includes(decoded.email.toLowerCase());
     next();
   } catch {
+    console.warn("Authorization denied: bearer token invalid or expired.");
     res.status(401).json({ error: "Jeton invalide ou expiré." });
   }
 }
@@ -91,11 +95,14 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   try {
     const snap = await adminDb.collection("users").doc(res.locals.authUid).get();
     const data = snap.data();
-    if (snap.exists && data?.role === "admin" && data?.status !== "banned" && (data?.ownerId || snap.id) === snap.id) {
+    const ownerId = typeof data?.ownerId === "string" && data.ownerId ? data.ownerId : snap.id;
+    if (snap.exists && data?.role === "admin" && data?.status !== "banned" && ownerId === snap.id) {
       return next();
     }
+    console.warn("Authorization denied: caller is not an active store administrator.");
     res.status(403).json({ error: "Accès refusé." });
   } catch {
+    console.error("Authorization check failed: administrator profile lookup failed.");
     res.status(500).json({ error: "Erreur de vérification des droits." });
   }
 }
@@ -103,9 +110,29 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // A non-super-admin may only manage collaborators that belong to their own store.
 async function canManageTarget(res: Response, targetUid: string): Promise<boolean> {
   if (res.locals.isSuperAdmin) return true;
-  if (targetUid === res.locals.authUid) return false;
-  const snap = await adminDb.collection("users").doc(targetUid).get();
-  return snap.exists && snap.data()?.ownerId === res.locals.authUid;
+  if (targetUid === res.locals.authUid) {
+    console.warn("Authorization denied: store administrator attempted to manage their own account.");
+    return false;
+  }
+  try {
+    const snap = await adminDb.collection("users").doc(targetUid).get();
+    if (!snap.exists) {
+      console.warn("Authorization denied: target profile does not exist.");
+      return false;
+    }
+    if (snap.data()?.ownerId !== res.locals.authUid) {
+      console.warn("Authorization denied: target profile belongs to another store.");
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("Authorization check failed: target profile lookup failed.", {
+      code: typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "unknown",
+    });
+    throw error;
+  }
 }
 
 function isStringArray(v: unknown): v is string[] {
@@ -135,6 +162,10 @@ async function startServer() {
 
   app.get("/healthz", (_req, res) => {
     res.sendStatus(200);
+  });
+
+  app.get("/api/healthz", (_req, res) => {
+    res.json({ ok: true });
   });
 
   app.post("/api/financial/sales/:saleId/costs", requireAuth, async (req, res) => {
@@ -413,13 +444,18 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (err: any) {
-      console.error("Error updating user:", err);
+      console.error("User update failed.", {
+        code: typeof err === "object" && err !== null && "code" in err
+          ? String(err.code)
+          : "unknown",
+      });
       res.status(500).json({ error: err.message });
     }
   });
 
   app.post("/api/admin/users/delete", requireAuth, requireAdmin, async (req, res) => {
     let profileRemoved = false;
+    let removedProfile: Record<string, unknown> | null = null;
     try {
       const { uid } = req.body;
       if (typeof uid !== "string" || !uid) {
@@ -440,6 +476,7 @@ async function startServer() {
         }
 
         const targetData = targetProfile.data()!;
+        removedProfile = targetData;
         if (targetData.role === "admin") {
           const administrators = await transaction.get(
             adminDb.collection("users").where("role", "==", "admin")
@@ -474,15 +511,29 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (error) {
-      console.error("Unable to delete the requested user.");
+      console.error("User deletion failed.", {
+        code: typeof error === "object" && error !== null && "code" in error
+          ? String(error.code)
+          : "unknown",
+      });
+      if (profileRemoved && removedProfile) {
+        try {
+          await adminDb.collection("users").doc(String(req.body.uid)).create(removedProfile);
+        } catch {
+          console.error("User deletion rollback failed: profile restoration failed.");
+          return res.status(500).json({
+            error: "La suppression est incomplète : le profil Firestore n’a pas pu être rétabli après l’échec de Firebase Authentication.",
+          });
+        }
+      }
       const status = typeof error === "object" && error !== null && "status" in error &&
         typeof error.status === "number" ? error.status : 500;
       const message = profileRemoved
-        ? "Profil retiré, mais la suppression du compte Firebase Authentication a échoué. Contactez l’administrateur."
+        ? "La suppression du compte Firebase Authentication a échoué et le profil a été rétabli. Veuillez réessayer."
         : status < 500 && error instanceof Error
           ? error.message
           : "Impossible de supprimer cet utilisateur.";
-      res.status(status).json({ error: message });
+      res.status(profileRemoved ? 502 : status).json({ error: message });
     }
   });
 

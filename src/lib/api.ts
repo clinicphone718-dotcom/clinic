@@ -19,41 +19,76 @@ export async function apiFetch(
   const currentUser = auth.currentUser;
   if (!currentUser) throw new ApiError('Session invalide. Veuillez vous reconnecter.');
 
+  let token: string;
+  try {
+    token = await currentUser.getIdToken();
+  } catch {
+    throw new ApiError('Impossible de renouveler votre session. Veuillez vous reconnecter.');
+  }
+
+  const headers = new Headers(options.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  if (options.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   let response: Response;
   try {
-    const token = await currentUser.getIdToken();
-    const headers = new Headers(options.headers);
-    headers.set('Authorization', `Bearer ${token}`);
-    if (options.body && !headers.has('Content-Type')) {
-      headers.set('Content-Type', 'application/json');
-    }
     response = await fetch(`${API_BASE_PATH}${path.startsWith('/') ? path : `/${path}`}`, {
       ...options,
       headers,
     });
   } catch {
-    throw new ApiError('Serveur indisponible, contactez l’administrateur');
+    throw new ApiError('Serveur indisponible. Vérifiez votre connexion ou la configuration du serveur.');
   }
 
-  if (response.status === 404) {
-    throw new ApiError('Serveur indisponible, contactez l’administrateur', response.status);
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('text/html')) {
+    throw new ApiError(
+      'Le serveur a renvoyé une page HTML au lieu de l’API. Vérifiez le proxy du déploiement statique.',
+      response.status,
+    );
   }
+
   if (!response.ok) {
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.toLowerCase().includes('text/html')) {
-      throw new ApiError('Serveur indisponible, contactez l’administrateur', response.status);
+    const body = await response.text();
+    let serverMessage = '';
+    if (body && contentType.toLowerCase().includes('application/json')) {
+      try {
+        const payload: unknown = JSON.parse(body);
+        if (
+          typeof payload === 'object' &&
+          payload !== null &&
+          'error' in payload &&
+          typeof payload.error === 'string'
+        ) {
+          serverMessage = payload.error;
+        } else if (
+          typeof payload === 'object' &&
+          payload !== null &&
+          'message' in payload &&
+          typeof payload.message === 'string'
+        ) {
+          serverMessage = payload.message;
+        }
+      } catch {
+        serverMessage = '';
+      }
+    } else if (body.trim()) {
+      serverMessage = body.trim();
     }
-    const payload: unknown = contentType.toLowerCase().includes('application/json')
-      ? await response.json()
-      : null;
-    const message =
-      typeof payload === 'object' &&
-      payload !== null &&
-      'error' in payload &&
-      typeof payload.error === 'string'
-        ? payload.error
-        : 'La requête a échoué.';
-    throw new ApiError(message, response.status);
+
+    if (serverMessage) throw new ApiError(serverMessage, response.status);
+    if (response.status === 401) {
+      throw new ApiError('Session expirée ou invalide. Veuillez vous reconnecter.', response.status);
+    }
+    if (response.status === 403) {
+      throw new ApiError('Accès refusé par le serveur.', response.status);
+    }
+    if (response.status === 404) {
+      throw new ApiError('Route API introuvable (404). Vérifiez la version du serveur et sa configuration.', response.status);
+    }
+    throw new ApiError(`La requête a échoué (HTTP ${response.status}).`, response.status);
   }
 
   return response;
@@ -66,9 +101,6 @@ export async function apiRequest<T>(
   const response = await apiFetch(path, options);
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/json')) {
-    if (contentType.toLowerCase().includes('text/html')) {
-      throw new ApiError('Serveur indisponible, contactez l’administrateur', response.status);
-    }
     throw new ApiError('Réponse invalide du serveur.', response.status);
   }
   try {
@@ -76,4 +108,8 @@ export async function apiRequest<T>(
   } catch {
     throw new ApiError('Réponse invalide du serveur.', response.status);
   }
+}
+
+export async function checkApiHealth(): Promise<void> {
+  await apiFetch('/healthz');
 }
