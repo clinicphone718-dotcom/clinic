@@ -1427,7 +1427,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       {/* SECTION: VISUALISATION DU VOLUME DES VENTES SUR LES 7 DERNIERS JOURS */}
       <SalesVolumeChart 
         sales={sales} 
-        products={products} 
+        saleCostSnapshots={saleCostSnapshots}
         currency={currency} 
         showProfit={canViewMargin}
       />

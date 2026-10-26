@@ -10,7 +10,8 @@ import {
   Tooltip,
   Legend
 } from 'recharts';
-import { Sale, Product } from '../types';
+import { Sale } from '../types';
+import { computeSaleProfit, type SaleCostLine } from '../lib/financial';
 import { 
   BarChart3, 
   TrendingUp, 
@@ -24,12 +25,12 @@ import {
 
 interface SalesVolumeChartProps {
   sales: Sale[];
-  products: Product[];
+  saleCostSnapshots: Record<string, SaleCostLine[]>;
   currency?: string;
   showProfit?: boolean;
 }
 
-export default function SalesVolumeChart({ sales, products, currency = 'DT', showProfit = false }: SalesVolumeChartProps) {
+export default function SalesVolumeChart({ sales, saleCostSnapshots, currency = 'DT', showProfit = false }: SalesVolumeChartProps) {
   const [chartMode, setChartMode] = useState<'combined' | 'volume' | 'revenue'>('combined');
 
   // Safe date parser
@@ -48,7 +49,8 @@ export default function SalesVolumeChart({ sales, products, currency = 'DT', sho
       fullDateLabel: string;
       volume: number;
       revenue: number;
-      profit: number;
+      profit: number | null;
+      profitIncomplete: boolean;
     }[] = [];
 
     const now = new Date();
@@ -75,7 +77,8 @@ export default function SalesVolumeChart({ sales, products, currency = 'DT', sho
         fullDateLabel: isToday ? `Aujourd'hui (${d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })})` : dayFormatted,
         volume: 0,
         revenue: 0,
-        profit: 0
+        profit: 0,
+        profitIncomplete: false,
       });
     }
 
@@ -92,16 +95,15 @@ export default function SalesVolumeChart({ sales, products, currency = 'DT', sho
         matchedDay.volume += 1;
         matchedDay.revenue += Number(sale.total || 0);
 
-        // Approximate profit
-        let costOfGoods = 0;
-        if (showProfit && Array.isArray(sale.items)) {
-          sale.items.forEach((item) => {
-            const product = products.find((p) => p.id === item.productId);
-            const unitBuyPrice = product ? Number(product.buyPrice || 0) : 0;
-            costOfGoods += unitBuyPrice * Number(item.quantity || 1);
-          });
+        if (showProfit) {
+          const margin = computeSaleProfit(sale, saleCostSnapshots[sale.id]);
+          if (margin.profit === null) {
+            matchedDay.profit = null;
+            matchedDay.profitIncomplete = true;
+          } else if (!matchedDay.profitIncomplete) {
+            matchedDay.profit = (matchedDay.profit || 0) + margin.profit;
+          }
         }
-        if (showProfit) matchedDay.profit += Math.max(0, Number(sale.total || 0) - costOfGoods);
       }
     });
 
@@ -121,7 +123,7 @@ export default function SalesVolumeChart({ sales, products, currency = 'DT', sho
       avgDailyRevenue,
       peakDay
     };
-  }, [sales, products, showProfit]);
+  }, [sales, saleCostSnapshots, showProfit]);
 
   // Custom tooltips with styled Tailwind card
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -157,13 +159,16 @@ export default function SalesVolumeChart({ sales, products, currency = 'DT', sho
               </span>
             </div>
 
-            {showProfit && dataPoint.profit > 0 && (
+            {showProfit && dataPoint.profit !== null && dataPoint.profit !== 0 && (
               <div className="flex items-center justify-between gap-4 pt-1 border-t border-slate-800 text-[11px]">
-                <span className="text-slate-400">Marge estimée:</span>
-                <span className="font-mono font-bold text-teal-300">
-                  +{dataPoint.profit.toFixed(3)} {currency}
+                <span className="text-slate-400">Bénéfice brut:</span>
+                <span className={`font-mono font-bold ${dataPoint.profit < 0 ? 'text-rose-300' : 'text-teal-300'}`}>
+                  {dataPoint.profit > 0 ? '+' : ''}{dataPoint.profit.toFixed(3)} {currency}
                 </span>
               </div>
+            )}
+            {showProfit && dataPoint.profitIncomplete && (
+              <p className="pt-1 text-[10px] font-semibold text-amber-300">Coûts historiques incomplets ; bénéfice indisponible.</p>
             )}
           </div>
         </div>
