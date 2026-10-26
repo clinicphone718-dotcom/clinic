@@ -41,9 +41,9 @@ const NAV_SECTIONS = [
     items: [
       { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
       { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
-      { id: 'invoices', name: 'Clôture de caisse', path: '/cash-session', icon: CircleDollarSign },
       { id: 'sales', name: 'Historique', path: '/sales', icon: History },
       { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
+      { id: 'invoices', name: 'Clôture de caisse', path: '/cash-session', icon: CircleDollarSign },
     ],
   },
   {
@@ -71,8 +71,8 @@ const NAV_SECTIONS = [
     title: 'ADMINISTRATION',
     items: [
       { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
-      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
       { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
+      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
     ],
   },
 ];
@@ -853,7 +853,7 @@ export default function App() {
  
             <div className="mx-auto w-full max-w-[1800px] flex-1 p-4 lg:p-8">
               <Routes>
-                <Route path="/" element={hasMenuAccess(userProfile, 'dashboard') ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
+                <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/clients" element={hasMenuAccess(userProfile, 'clients') ? <Clients userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/pos" element={hasMenuAccess(userProfile, 'pos') ? <POS userProfile={userProfile} /> : <Navigate to="/" replace />} />
