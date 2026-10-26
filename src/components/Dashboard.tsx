@@ -29,6 +29,7 @@ import {
   Trash2,
   PackagePlus,
   BarChart3,
+  Wrench,
   Percent,
   Sparkles
 } from 'lucide-react';
@@ -416,8 +417,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     const dailyExpenses = todayExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
 
     // 2. Chiffre d'affaires
-    const dailyRevenue = todaySales.reduce((sum, sale) =>
-      sum + computeSaleProfit(sale, saleCostSnapshots[sale.id]).revenueExcludingTax, 0);
+    const dailyRevenue = todaySales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0);
 
     // 3. Paid & Debt
     const dailyPaid = todaySales.reduce((sum, s) => sum + s.paid, 0);
@@ -1029,14 +1029,12 @@ export default function Dashboard({ userProfile }: DashboardProps) {
   };
 
   const financialCards = [
-    { label: "Chiffre d'affaires", value: financialSummary.revenue, style: 'text-slate-900' },
-    { label: 'Encaissé', value: financialSummary.collected, style: 'text-emerald-700' },
-    { label: 'Impayés / dettes', value: financialSummary.debt, style: 'text-rose-700' },
+    { label: 'Réparations', value: financialSummary.repairCount, unit: 'réparations', style: 'from-blue-600 to-indigo-700', icon: Wrench, count: true },
+    { label: 'Encaissé', value: financialSummary.collected, unit: currency, style: 'from-emerald-500 to-teal-700', icon: Wallet, count: false },
     ...(canViewMargin ? [
-      { label: 'Bénéfice brut', value: financialSummary.grossProfit, style: 'text-indigo-700' },
-      { label: 'Dépenses', value: financialSummary.expenses, style: 'text-rose-700' },
-      { label: 'Bénéfice net', value: financialSummary.netProfit, style: 'text-emerald-700' },
+      { label: 'Bénéfice brut', value: financialSummary.grossProfit, unit: currency, style: 'from-violet-600 to-purple-800', icon: Coins, count: false },
     ] : []),
+    { label: 'Impayés', value: financialSummary.debt, unit: currency, style: 'from-rose-500 to-red-700', icon: AlertCircle, count: false },
   ];
   const historicalTvaSalesCount = sales.filter(sale => Number(sale.tva) > 0).length;
 
@@ -1091,14 +1089,18 @@ export default function Dashboard({ userProfile }: DashboardProps) {
             <option value="all">Tout</option>
           </select>
         </div>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 2xl:grid-cols-6">
-          {financialCards.map(card => (
-            <div key={card.label} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="truncate text-[10px] font-black uppercase tracking-wider text-slate-400">{card.label}</p>
-              <p className={`mt-2 truncate font-mono text-xl font-black tabular-nums ${card.style}`}>
-                {card.value === null ? '—' : `${card.value.toFixed(3)} ${currency}`}
-              </p>
-            </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {financialCards.map(({ label, value, unit, style, icon: Icon, count }) => (
+            <article key={label} className={`flex min-h-28 items-center justify-between rounded-2xl bg-gradient-to-br ${style} p-4 text-white shadow-md sm:p-5`}>
+              <div className="min-w-0">
+                <p className="truncate text-[10px] font-black uppercase tracking-wider text-white/75">{label}</p>
+                <p className="mt-2 truncate font-mono text-2xl font-black tabular-nums">
+                  {value === null ? '—' : count ? value : value.toFixed(3)}
+                  {value !== null && <span className="ml-1 text-sm font-bold">{unit}</span>}
+                </p>
+              </div>
+              <Icon className="h-8 w-8 shrink-0 opacity-80" aria-hidden="true" />
+            </article>
           ))}
         </div>
         {canViewMargin && (
