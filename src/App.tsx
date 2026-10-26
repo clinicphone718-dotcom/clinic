@@ -445,6 +445,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [todayNotes, setTodayNotes] = useState<Note[]>([]);
   const [showNotesPopover, setShowNotesPopover] = useState(false);
+  const [headerNotifications, setHeaderNotifications] = useState({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+  const [headerNotificationError, setHeaderNotificationError] = useState('');
 
   // Offline status & synchronization states
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -578,6 +580,101 @@ export default function App() {
   }, [user, userProfile]);
 
   useEffect(() => {
+    if (!auth.currentUser || !userProfile) {
+      setHeaderNotifications({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+      setHeaderNotificationError('');
+      return;
+    }
+    setHeaderNotifications({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+    setHeaderNotificationError('');
+
+    const ownerId = userProfile.role === 'admin'
+      ? userProfile.uid
+      : userProfile.ownerId || userProfile.uid;
+    const canViewStock = hasMenuAccess(userProfile, 'products');
+    const canViewRepairs = hasMenuAccess(userProfile, 'reparation');
+    const canViewSales = hasMenuAccess(userProfile, 'sales') || hasMenuAccess(userProfile, 'invoices');
+    let products: Array<Record<string, any>> = [];
+    let minStockAlert = 5;
+    const updateLowStock = () => {
+      const lowStock = products.filter(product => {
+        if (product.inventoryType === 'service') return false;
+        const threshold = Number.isFinite(Number(product.lowStockAlert)) && product.lowStockAlert !== undefined && product.lowStockAlert !== null
+          ? Number(product.lowStockAlert)
+          : minStockAlert;
+        return (Number(product.stock) || 0) <= threshold;
+      }).length;
+      setHeaderNotifications(current => ({ ...current, lowStock }));
+    };
+    const subscriptions: Array<() => void> = [];
+
+    if (canViewStock) {
+      subscriptions.push(onSnapshot(
+        query(collection(db, 'products'), where('ownerId', '==', ownerId)),
+        snapshot => {
+          products = snapshot.docs.map(item => item.data());
+          updateLowStock();
+        },
+        () => {
+          setHeaderNotificationError('Impossible de charger les alertes de stock.');
+          console.error('Unable to load store-scoped stock notifications.');
+        },
+      ));
+      subscriptions.push(onSnapshot(doc(db, 'settings', ownerId), snapshot => {
+        if (snapshot.exists()) {
+          const configured = Number(snapshot.data().minStockAlert);
+          minStockAlert = Number.isFinite(configured) && configured >= 0 ? configured : 5;
+          updateLowStock();
+        }
+      }, () => {
+        setHeaderNotificationError('Impossible de charger le seuil d’alerte de stock.');
+        console.error('Unable to load the store stock-alert threshold.');
+      }));
+    } else {
+      setHeaderNotifications(current => ({ ...current, lowStock: 0 }));
+    }
+
+    if (canViewRepairs) {
+      const repairsQuery = userProfile.role === 'admin'
+        ? query(collection(db, 'repairs'), where('ownerId', '==', ownerId))
+        : query(collection(db, 'repairs'), where('ownerId', '==', ownerId), where('costsSeparated', '==', true));
+      subscriptions.push(onSnapshot(repairsQuery, snapshot => {
+        const records = snapshot.docs.map(item => item.data());
+        setHeaderNotifications(current => ({
+          ...current,
+          readyRepairs: records.filter(repair => repair.status === 'termine').length,
+          unpaidRepairs: records.filter(repair => Number(repair.debt) > 0).length,
+        }));
+      }, () => {
+        setHeaderNotificationError('Impossible de charger les alertes de réparations.');
+        console.error('Unable to load store-scoped repair notifications.');
+      }));
+    } else {
+      setHeaderNotifications(current => ({ ...current, readyRepairs: 0 }));
+    }
+
+    if (canViewSales) {
+      subscriptions.push(onSnapshot(
+        query(collection(db, 'sales'), where('ownerId', '==', ownerId)),
+        snapshot => {
+          setHeaderNotifications(current => ({
+            ...current,
+            unpaidSales: snapshot.docs.filter(item => Number(item.data().debt) > 0).length,
+          }));
+        },
+        () => {
+          setHeaderNotificationError('Impossible de charger les alertes d’impayés.');
+          console.error('Unable to load store-scoped unpaid-sale notifications.');
+        },
+      ));
+    } else {
+      setHeaderNotifications(current => ({ ...current, unpaidSales: 0 }));
+    }
+
+    return () => subscriptions.forEach(unsubscribe => unsubscribe());
+  }, [userProfile]);
+
+  useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
     let isMounted = true;
     const startProfileListener = (uid: string, isFirebaseUser: boolean) => {
@@ -686,6 +783,18 @@ export default function App() {
     };
   }, []);
 
+  const canViewHeaderNotifications = hasMenuAccess(userProfile, 'notes') ||
+    hasMenuAccess(userProfile, 'products') ||
+    hasMenuAccess(userProfile, 'reparation') ||
+    hasMenuAccess(userProfile, 'sales') ||
+    hasMenuAccess(userProfile, 'invoices');
+  const headerNotificationItems = [
+    { id: 'lowStock', label: 'Articles sous le seuil de stock', count: headerNotifications.lowStock, path: '/products', color: 'text-rose-700 bg-rose-50' },
+    { id: 'readyRepairs', label: 'Réparations prêtes à être récupérées', count: headerNotifications.readyRepairs, path: '/repairs', color: 'text-amber-700 bg-amber-50' },
+    { id: 'unpaid', label: 'Ventes ou réparations avec impayé', count: headerNotifications.unpaidSales + headerNotifications.unpaidRepairs, path: hasMenuAccess(userProfile, 'sales') ? '/sales' : '/repairs', color: 'text-indigo-700 bg-indigo-50' },
+  ].filter(item => item.count > 0);
+  const headerNotificationCount = todayNotes.length + headerNotificationItems.reduce((sum, item) => sum + item.count, 0);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -771,57 +880,69 @@ export default function App() {
                   <span>{getFormattedDate()}</span>
                 </div>
 
-                {hasMenuAccess(userProfile, 'notes') ? (
+                {canViewHeaderNotifications ? (
                 <div className="relative">
                   <button
                     onClick={() => setShowNotesPopover(!showNotesPopover)}
                     className={cn(
                       "p-2 rounded-xl border transition-all duration-300 relative cursor-pointer",
-                      todayNotes.length > 0
+                      headerNotificationCount > 0
                         ? "bg-amber-50 hover:bg-amber-100 border-amber-200/60 text-amber-600 shadow-sm"
                         : "bg-slate-50 hover:bg-slate-100 border-slate-100 text-slate-400"
                     )}
-                    title={todayNotes.length > 0 ? `${todayNotes.length} mémo(s) pour aujourd'hui !` : "Aucun mémo aujourd'hui"}
+                    title={headerNotificationCount > 0 ? `${headerNotificationCount} notification(s)` : "Aucune notification"}
+                    aria-label={`Notifications${headerNotificationCount ? ` (${headerNotificationCount})` : ''}`}
                   >
-                    <Bell className={cn("w-4 h-4", todayNotes.length > 0 && "animate-bounce duration-1000")} />
-                    {todayNotes.length > 0 && (
+                    <Bell className={cn("w-4 h-4", headerNotificationCount > 0 && "animate-bounce duration-1000")} />
+                    {headerNotificationCount > 0 && (
                       <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-[9px] text-white font-black rounded-full flex items-center justify-center border-2 border-white shadow-xs">
-                        {todayNotes.length}
+                        {headerNotificationCount}
                       </span>
                     )}
                   </button>
 
-                  {/* Dropdown Popover with real-time notes */}
                   {showNotesPopover && (
                     <div className="absolute left-0 mt-2.5 w-76 sm:w-80 bg-white border border-slate-100 rounded-2xl shadow-xl z-50 p-4 animate-in fade-in slide-in-from-top-2 duration-200">
                       <div className="flex items-center justify-between border-b border-slate-50 pb-2.5 mb-2.5">
                         <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                          <StickyNote className="w-4 h-4 text-indigo-500 animate-pulse" />
-                          Mémos d'aujourd'hui
+                          <Bell className="w-4 h-4 text-indigo-500" />
+                          Notifications
                         </span>
                         <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md text-slate-500 bg-slate-50 border border-slate-100">
-                          {todayNotes.length} actif{todayNotes.length > 1 ? 's' : ''}
+                          {headerNotificationCount} active{headerNotificationCount > 1 ? 's' : ''}
                         </span>
                       </div>
 
                       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {todayNotes.length === 0 ? (
+                        {headerNotificationError && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-[10px] font-semibold text-rose-700">{headerNotificationError}</p>}
+                        {headerNotificationItems.map(item => (
+                          <Link key={item.id} to={item.path} onClick={() => setShowNotesPopover(false)}
+                            className={cn("flex items-center justify-between gap-3 rounded-xl p-2.5 text-xs font-semibold hover:opacity-85", item.color)}>
+                            <span>{item.label}</span>
+                            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black">{item.count}</span>
+                          </Link>
+                        ))}
+                        {hasMenuAccess(userProfile, 'notes') && (
+                          <div className="border-t border-slate-100 pt-2">
+                            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600"><StickyNote className="h-3.5 w-3.5 text-indigo-500" /> Mémos d’aujourd’hui</p>
+                            {todayNotes.length === 0 ? <p className="px-1 text-[10px] text-slate-400">Aucun mémo pour aujourd’hui.</p> : todayNotes.map(note => (
+                              <div key={note.id} className="mb-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
+                                <p className="text-xs font-extrabold text-slate-800">{note.title}</p>
+                                <p className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-slate-500">{note.content}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {headerNotificationItems.length === 0 && todayNotes.length === 0 && !headerNotificationError ? (
                           <div className="text-center py-4 text-slate-400">
                             <CheckCircle className="w-7 h-7 text-emerald-400 mx-auto mb-1.5" />
                             <p className="text-[10px] font-[900] uppercase tracking-wide text-slate-500">Tout est en ordre</p>
-                            <p className="text-[9px] font-semibold text-slate-400 mt-0.5">Aucun mémo pour aujourd’hui.</p>
+                            <p className="text-[9px] font-semibold text-slate-400 mt-0.5">Aucune notification à traiter.</p>
                           </div>
-                        ) : (
-                          todayNotes.map((note) => (
-                            <div key={note.id} className="p-2.5 rounded-xl bg-slate-50/50 border border-slate-100/80 hover:border-indigo-100 hover:bg-indigo-50/10 transition-colors">
-                              <p className="text-xs font-extrabold text-slate-800 tracking-tight">{note.title}</p>
-                              <p className="text-[10px] text-slate-500 font-medium mt-1 line-clamp-3 leading-relaxed">{note.content}</p>
-                            </div>
-                          ))
-                        )}
+                        ) : null}
                       </div>
 
-                      <div className="border-t border-slate-50 mt-3 pt-2.5 text-center">
+                      {hasMenuAccess(userProfile, 'notes') && <div className="border-t border-slate-50 mt-3 pt-2.5 text-center">
                         <Link
                           to="/notes"
                           onClick={() => setShowNotesPopover(false)}
@@ -829,7 +950,7 @@ export default function App() {
                         >
                           Gérer tous les mémos
                         </Link>
-                      </div>
+                      </div>}
                     </div>
                   )}
                 </div>
