@@ -274,9 +274,10 @@ function Sidebar({
                         className={cn(
                           "flex min-h-10 items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all duration-200 relative group",
                           isActive
-                            ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/15"
+                            ? "app-nav-active bg-indigo-600 text-white shadow-lg shadow-indigo-600/15"
                             : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                         )}
+                        aria-current={isActive ? 'page' : undefined}
                       >
                         <Icon className={cn("h-4 w-4 transition-transform group-hover:scale-110", isActive ? "text-white" : "text-slate-400")} />
                         <span className="flex-1">{item.name}</span>
@@ -851,7 +852,7 @@ export default function App() {
               </div>
             </header>
  
-            <div className="mx-auto w-full max-w-[1800px] flex-1 p-4 lg:p-8">
+            <div className="mx-auto w-full max-w-[1600px] flex-1 p-4 lg:p-8">
               <Routes>
                 <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />

@@ -5,12 +5,100 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-display: "Outfit Variable", Outfit, sans-serif;
   --color-brand: var(--brand-primary, #4f46e5);
+  --color-indigo-50: color-mix(in srgb, var(--brand-primary, #4f46e5) 5%, white);
+  --color-indigo-100: color-mix(in srgb, var(--brand-primary, #4f46e5) 10%, white);
+  --color-indigo-200: color-mix(in srgb, var(--brand-primary, #4f46e5) 20%, white);
+  --color-indigo-300: color-mix(in srgb, var(--brand-primary, #4f46e5) 35%, white);
+  --color-indigo-400: color-mix(in srgb, var(--brand-primary, #4f46e5) 55%, white);
+  --color-indigo-500: color-mix(in srgb, var(--brand-primary, #4f46e5) 78%, white);
   --color-indigo-600: var(--brand-primary, #4f46e5);
   --color-indigo-700: color-mix(in srgb, var(--brand-primary, #4f46e5) 82%, black);
+  --color-indigo-800: color-mix(in srgb, var(--brand-primary, #4f46e5) 68%, black);
+  --color-indigo-900: color-mix(in srgb, var(--brand-primary, #4f46e5) 54%, black);
+  --color-indigo-950: color-mix(in srgb, var(--brand-primary, #4f46e5) 42%, black);
+  --spacing-page: clamp(1rem, 3vw, 2rem);
+  --spacing-card: clamp(1rem, 2vw, 1.5rem);
   --radius-card: 1.25rem;
   --radius-control: 0.75rem;
+  --radius-panel: 1.5rem;
+  --shadow-soft: 0 2px 12px rgb(15 23 42 / 5%);
   --shadow-card: 0 12px 36px -24px rgb(15 23 42 / 24%), 0 1px 3px rgb(15 23 42 / 5%);
   --shadow-card-hover: 0 20px 42px -24px rgb(15 23 42 / 30%), 0 4px 10px rgb(15 23 42 / 5%);
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+
+  button, [role="button"] {
+    min-height: 40px;
+    transition-duration: 160ms;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select, textarea {
+    min-height: 40px;
+    border-radius: var(--radius-control);
+  }
+}
+
+@layer components {
+  .app-card {
+    border: 1px solid rgb(226 232 240 / 85%);
+    border-radius: var(--radius-card);
+    background: white;
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 180ms ease, border-color 180ms ease;
+  }
+
+  .app-card:hover {
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  .app-field {
+    min-height: 44px;
+    border: 1px solid rgb(203 213 225);
+    border-radius: var(--radius-control);
+    background: white;
+    padding: 0.625rem 0.875rem;
+    color: #0f172a;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .app-button-primary,
+  .app-button-secondary,
+  .app-button-danger {
+    display: inline-flex;
+    min-height: 40px;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-control);
+    padding: 0.625rem 1rem;
+    font-weight: 700;
+    transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .app-button-primary {
+    background: var(--brand-primary, #4f46e5);
+    color: white;
+  }
+
+  .app-button-secondary {
+    border: 1px solid rgb(203 213 225);
+    background: white;
+    color: #334155;
+  }
+
+  .app-button-danger {
+    background: #be123c;
+    color: white;
+  }
 }
 
 @font-face {
@@ -112,6 +200,20 @@ tbody tr {
 
 .premium-shadow:hover {
   box-shadow: var(--shadow-card-hover);
+}
+
+.app-nav-active {
+  position: relative;
+}
+
+.app-nav-active::before {
+  position: absolute;
+  inset-block: 0.5rem;
+  left: 0;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: white;
+  content: "";
 }
 
 @media print {

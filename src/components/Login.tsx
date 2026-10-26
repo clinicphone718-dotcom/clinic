@@ -135,8 +135,8 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-      <div className="max-w-md w-full bg-white rounded-3xl shadow-xl shadow-slate-200/60 p-6 sm:p-8 border border-slate-200/80">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-100 via-indigo-50/50 to-cyan-50 p-4">
+      <div className="app-card max-w-md w-full rounded-3xl p-6 sm:p-8">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-50 to-cyan-50 text-indigo-600 mb-4 shadow-sm border border-indigo-100">
             {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full rounded-2xl object-cover" /> : <ShoppingCart className="w-8 h-8 text-indigo-600" />}
@@ -192,7 +192,7 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
+                className="app-field w-full pl-10 pr-4 bg-slate-50 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none text-sm font-medium"
                 placeholder="contact@phoneclinic.tn"
               />
             </div>
@@ -207,7 +207,7 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
+                className="app-field w-full pl-10 pr-4 bg-slate-50 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none text-sm font-medium"
                 placeholder="••••••••"
               />
             </div>
