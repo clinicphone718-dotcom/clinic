@@ -22,13 +22,14 @@ export async function apiFetch(
   let response: Response;
   try {
     const token = await currentUser.getIdToken();
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    if (options.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     response = await fetch(`${API_BASE_PATH}${path.startsWith('/') ? path : `/${path}`}`, {
       ...options,
-      headers: {
-        ...options.headers,
-        Authorization: `Bearer ${token}`,
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      },
+      headers,
     });
   } catch {
     throw new ApiError('Serveur indisponible, contactez l’administrateur');
@@ -65,7 +66,14 @@ export async function apiRequest<T>(
   const response = await apiFetch(path, options);
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.toLowerCase().includes('application/json')) {
+    if (contentType.toLowerCase().includes('text/html')) {
+      throw new ApiError('Serveur indisponible, contactez l’administrateur', response.status);
+    }
     throw new ApiError('Réponse invalide du serveur.', response.status);
   }
-  return response.json() as Promise<T>;
+  try {
+    return await response.json() as T;
+  } catch {
+    throw new ApiError('Réponse invalide du serveur.', response.status);
+  }
 }
