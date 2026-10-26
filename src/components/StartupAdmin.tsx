@@ -14,7 +14,7 @@ import { db } from '../firebase';
 import type { StartupItem, StartupSection, UserProfile } from '../types';
 import { adhkarLibrary } from '../data/adhkar';
 import { verses } from '../data/verses';
-import { isDirectAudioUrl } from '../lib/startup';
+import { isDirectAudioUrl, isDirectImageUrl } from '../lib/startup';
 import { useStartup } from './StartupProvider';
 
 const SECTION_LABELS: Record<StartupSection, string> = {
@@ -30,41 +30,10 @@ const EMPTY_FORM = {
   text: '',
   source: '',
   repeat: 1,
-  imageData: '',
+  imageUrl: '',
+  legacyImageData: '',
   audioUrl: '',
 };
-
-async function compressImage(file: File): Promise<string> {
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const element = new Image();
-    element.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(element);
-    };
-    element.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Impossible de lire cette image."));
-    };
-    element.src = url;
-  });
-  const scale = Math.min(1, 1280 / image.width);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(image.width * scale));
-  canvas.height = Math.max(1, Math.round(image.height * scale));
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error("Compression d'image indisponible dans ce navigateur.");
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  for (const quality of [0.82, 0.72, 0.62, 0.52, 0.42, 0.32]) {
-    const result = canvas.toDataURL('image/webp', quality);
-    if (result.startsWith('data:image/webp') && result.length <= 400_000) return result;
-  }
-  for (const quality of [0.8, 0.68, 0.55, 0.4, 0.3]) {
-    const result = canvas.toDataURL('image/jpeg', quality);
-    if (result.length <= 400_000) return result;
-  }
-  throw new Error("Cette image dépasse la limite de 400 Ko après compression.");
-}
 
 export default function StartupAdmin({ userProfile }: { userProfile: UserProfile | null }) {
   const { config, items, error } = useStartup();
@@ -72,12 +41,11 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
   const [section, setSection] = useState<StartupSection>('coran');
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const audioPreview = useRef<HTMLAudioElement | null>(null);
   const sectionItems = items.filter((item) => item.section === section);
+  const imagePreview = isDirectImageUrl(form.imageUrl) ? form.imageUrl : form.legacyImageData;
 
   const saveConfig = async (updates: Partial<typeof config>) => {
     try {
@@ -105,9 +73,7 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
-    setPreviewImage('');
     setEditingId(null);
-    if (fileInput.current) fileInput.current.value = '';
   };
 
   const saveItem = async (event: React.FormEvent) => {
@@ -116,12 +82,11 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
     if (!ownerId) return setMessage('Propriétaire du magasin introuvable.');
     if (!form.title.trim()) return setMessage('Le titre est obligatoire.');
     if (form.type === 'text' && !form.text.trim()) return setMessage('Le texte est obligatoire.');
-    if (form.type === 'image' && !form.imageData) return setMessage('Choisissez une image.');
-    if (form.type === 'audio' && !isDirectAudioUrl(form.audioUrl)) {
-      return setMessage('Utilisez un lien HTTPS direct vers un fichier .mp3 ou .m4a. YouTube n’est pas accepté.');
+    if (form.type === 'image' && !isDirectImageUrl(form.imageUrl)) {
+      return setMessage('Utilisez un lien HTTPS direct vers une image .jpg, .png, .webp, .gif ou .avif.');
     }
-    if (form.type === 'image' && form.imageData.length > 400_000) {
-      return setMessage("L’image compressée dépasse la limite de 400 Ko.");
+    if (form.type === 'audio' && !isDirectAudioUrl(form.audioUrl)) {
+      return setMessage('Utilisez un lien HTTPS direct vers un fichier .mp3, .m4a, .ogg ou .wav. YouTube n’est pas accepté.');
     }
     if (form.type === 'image' && !editingId && items.filter((item) => item.type === 'image').length >= 15) {
       return setMessage('La limite de 15 images par magasin est atteinte.');
@@ -137,8 +102,8 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
         text: form.type === 'text' ? form.text.trim() : '',
         source: form.source.trim(),
         repeat: Math.max(1, Number(form.repeat) || 1),
-        imageData: form.type === 'image' ? form.imageData : '',
-        audioUrl: form.type === 'audio' ? form.audioUrl.trim() : '',
+        ...(form.type === 'image' ? { imageUrl: form.imageUrl.trim() } : {}),
+        ...(form.type === 'audio' ? { audioUrl: form.audioUrl.trim() } : {}),
         order: editingId ? items.find((item) => item.id === editingId)?.order || 0 : items.length,
         active: items.find((item) => item.id === editingId)?.active ?? true,
         ...(editingId ? {} : { createdAt: serverTimestamp() }),
@@ -214,38 +179,26 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
       text: item.text || '',
       source: item.source || '',
       repeat: item.repeat || 1,
-      imageData: item.imageData || '',
+      imageUrl: item.imageUrl || '',
+      legacyImageData: item.imageData || '',
       audioUrl: item.audioUrl || '',
     });
-    setPreviewImage(item.imageData || '');
   };
 
   const testAudio = () => {
     setMessage('');
-    if (!isDirectAudioUrl(form.audioUrl)) return setMessage('Lien audio invalide : HTTPS et fichier .mp3/.m4a obligatoires.');
-    const audio = new Audio(form.audioUrl);
-    audioPreview.current?.pause();
-    audioPreview.current = audio;
-    audio.volume = config.volume;
-    void audio.play().then(() => {
-      setMessage('Test audio en cours (5 secondes).');
-      window.setTimeout(() => audio.pause(), 5000);
-    }).catch((audioError: unknown) => {
-      console.error('Audio test failed:', audioError);
-      setMessage('Impossible de lire cette piste audio.');
-    });
-  };
-
-  const uploadImage = async (file?: File) => {
-    if (!file) return;
-    setMessage('');
-    try {
-      const imageData = await compressImage(file);
-      setForm((current) => ({ ...current, type: 'image', imageData }));
-      setPreviewImage(imageData);
-    } catch (imageError) {
-      setMessage(imageError instanceof Error ? imageError.message : "Impossible de traiter l’image.");
+    if (!isDirectAudioUrl(form.audioUrl)) {
+      return setMessage('Lien audio invalide : HTTPS et extension .mp3, .m4a, .ogg ou .wav obligatoires.');
     }
+    const audio = audioPreview.current;
+    if (!audio) return setMessage('Lecteur audio indisponible.');
+    audio.volume = config.volume;
+    audio.currentTime = 0;
+    void audio.play().then(() => {
+      setMessage('Lecture audio démarrée.');
+    }).catch(() => {
+      setMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.');
+    });
   };
 
   return (
@@ -254,6 +207,11 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
         <h1 className="text-2xl font-black text-slate-900">Coran &amp; Adhkar</h1>
         <p className="mt-1 text-sm text-slate-500">Gérez les contenus et l’écran d’ouverture de votre magasin.</p>
       </div>
+
+      <aside className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
+        <h2 className="font-bold">Hébergement audio sans Firebase Storage</h2>
+        <p className="mt-1">Vous pouvez utiliser le palier gratuit de Cloudflare R2 ou Internet Archive. Après l’envoi chez l’hébergeur, copiez le lien public direct du fichier audio (pas la page de partage) et vérifiez que l’hôte autorise la lecture depuis le navigateur (CORS). Aucun fichier n’est envoyé dans Firebase.</p>
+      </aside>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-4 text-sm font-black uppercase tracking-wider text-slate-700">Réglages généraux</h2>
@@ -311,6 +269,9 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
                 {item.type === 'text' && <p className="font-arabic mt-2 line-clamp-2 text-right text-lg text-slate-600" dir="rtl">{item.text}</p>}
                 {item.source && <p className="mt-2 text-xs text-slate-400">{item.source}</p>}
                 {item.type === 'audio' && <p className="mt-2 truncate text-xs text-slate-500">{item.audioUrl}</p>}
+                {item.type === 'image' && (item.imageUrl || item.imageData) && (
+                  <img src={item.imageUrl || item.imageData} alt={item.title} className="mt-2 max-h-24 rounded-lg object-contain" />
+                )}
               </div>
               <div className="flex shrink-0 flex-wrap gap-1">
                 <button aria-label="Monter" disabled={index === 0} onClick={() => void runAction(() => moveItem(item, -1))} className="rounded p-2 text-slate-500 disabled:opacity-30"><ArrowUp className="h-4 w-4" /></button>
@@ -348,15 +309,25 @@ export default function StartupAdmin({ userProfile }: { userProfile: UserProfile
             </label>
           </>}
           {form.type === 'image' && <>
-            <input ref={fileInput} type="file" accept="image/*" onChange={(event) => void uploadImage(event.target.files?.[0])} className="block w-full text-xs" />
-            <p className="text-xs text-slate-500">Compression locale, largeur maximale 1280 px et taille maximale 400 Ko.</p>
-            {previewImage && <img src={previewImage} alt="Aperçu avant enregistrement" className="max-h-56 rounded-lg object-contain" />}
+            <label className="block text-xs font-bold text-slate-600">Lien HTTPS direct vers l’image
+              <input type="url" value={form.imageUrl} onChange={(event) => setForm({ ...form, imageUrl: event.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="https://exemple.tld/page.webp" />
+            </label>
+            <p className="text-xs text-slate-500">Formats acceptés : JPG, PNG, WebP, GIF et AVIF. Les anciens visuels enregistrés restent consultables ; ils ne sont pas supprimés lors de la modification.</p>
+            {imagePreview && <img src={imagePreview} alt="Aperçu de l’image" onError={() => setMessage('Image illisible ou inaccessible. Vérifiez le lien HTTPS direct et l’accès de l’hébergeur.')} className="max-h-56 rounded-lg object-contain" />}
           </>}
           {form.type === 'audio' && <>
-            <label className="block text-xs font-bold text-slate-600">URL directe HTTPS (.mp3 ou .m4a)
+            <label className="block text-xs font-bold text-slate-600">Lien du fichier audio HTTPS (.mp3, .m4a, .ogg ou .wav)
               <input type="url" value={form.audioUrl} onChange={(event) => setForm({ ...form, audioUrl: event.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="https://exemple.tld/recitation.mp3" />
             </label>
-            <button type="button" onClick={testAudio} className="rounded-lg border px-3 py-2 text-xs font-bold text-indigo-700">Tester (5 secondes)</button>
+            <button type="button" onClick={testAudio} className="rounded-lg border px-3 py-2 text-xs font-bold text-indigo-700">Tester la lecture</button>
+            <audio
+              ref={audioPreview}
+              controls
+              preload="none"
+              src={isDirectAudioUrl(form.audioUrl) ? form.audioUrl.trim() : undefined}
+              onError={() => setMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.')}
+              className="w-full"
+            />
           </>}
           {message && <p role="status" className="text-sm text-indigo-700">{message}</p>}
           {error && <p role="alert" className="text-sm text-rose-600">{error}</p>}

@@ -2,11 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import { db, auth } from '../firebase';
-import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { APP_NAME } from '../config/brand';
 import { StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType, hasMenuAccess } from '../App';
-import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck, Music2, Upload } from 'lucide-react';
+import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck, Music2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import { can } from '../lib/permissions';
@@ -311,8 +310,8 @@ export default function Settings({
   const [startupAudioUrl, setStartupAudioUrl] = useState(startupConfig.audioUrl || '');
   const [startupSaving, setStartupSaving] = useState(false);
   const [startupMessage, setStartupMessage] = useState('');
-  const [audioUploading, setAudioUploading] = useState(false);
-  const audioFileInput = React.useRef<HTMLInputElement>(null);
+  const [startupAudioTestMessage, setStartupAudioTestMessage] = useState('');
+  const startupAudioPreview = React.useRef<HTMLAudioElement>(null);
   const welcomeChoices = [
     ...verses.map((verse) => ({ id: `verse:${verse.title}`, ...verse })),
     ...adhkarLibrary.map((adhkar) => ({ id: `dhikr:${adhkar.section}:${adhkar.title}`, ...adhkar })),
@@ -345,7 +344,7 @@ export default function Settings({
       return;
     }
     if (startupAudioUrl && !isDirectAudioUrl(startupAudioUrl)) {
-      setStartupMessage('Utilisez un lien HTTPS direct vers un fichier .mp3 ou .m4a.');
+      setStartupMessage('Utilisez un lien HTTPS direct vers un fichier .mp3, .m4a, .ogg ou .wav.');
       return;
     }
 
@@ -371,37 +370,23 @@ export default function Settings({
     }
   };
 
-  const uploadStartupAudio = async (file?: File) => {
-    if (!file) return;
-    if (!ownerId) {
-      setStartupMessage('Propriétaire du magasin introuvable.');
+  const testStartupAudio = () => {
+    setStartupAudioTestMessage('');
+    if (!isDirectAudioUrl(startupAudioUrl)) {
+      setStartupAudioTestMessage('Lien audio invalide : fournissez une URL HTTPS directe en .mp3, .m4a, .ogg ou .wav.');
       return;
     }
-    if (!/\.(mp3|m4a)$/i.test(file.name) || (file.type && !['audio/mpeg', 'audio/mp4', 'audio/x-m4a'].includes(file.type))) {
-      setStartupMessage('Choisissez un fichier audio .mp3 ou .m4a.');
+    const audio = startupAudioPreview.current;
+    if (!audio) {
+      setStartupAudioTestMessage('Lecteur audio indisponible.');
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      setStartupMessage('Le fichier audio ne doit pas dépasser 20 Mo.');
-      return;
-    }
-
-    setAudioUploading(true);
-    setStartupMessage('');
-    try {
-      const objectName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-      const audioRef = ref(getStorage(), `startup-audio/${ownerId}/${objectName}`);
-      const uploaded = await uploadBytes(audioRef, file, { contentType: file.type || 'audio/mpeg' });
-      const downloadUrl = await getDownloadURL(uploaded.ref);
-      setStartupAudioUrl(downloadUrl);
-      setStartupMessage('Fichier envoyé. Enregistrez les réglages pour l’activer.');
-    } catch (uploadError) {
-      console.error('Unable to upload startup audio:', uploadError);
-      setStartupMessage('Impossible de téléverser le fichier. Vérifiez que Firebase Storage est activé et autorisé.');
-    } finally {
-      setAudioUploading(false);
-      if (audioFileInput.current) audioFileInput.current.value = '';
-    }
+    audio.currentTime = 0;
+    void audio.play().then(() => {
+      setStartupAudioTestMessage('Lecture audio démarrée.');
+    }).catch(() => {
+      setStartupAudioTestMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.');
+    });
   };
 
   if (userProfile && !hasMenuAccess(userProfile, 'settings')) {
@@ -1330,42 +1315,39 @@ export default function Settings({
             />
           </label>
 
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-            <label className="space-y-1 text-xs font-bold text-slate-600">
-              رابط URL للمقطع الصوتي
-              <input
-                type="url"
-                value={startupAudioUrl}
-                onChange={(event) => setStartupAudioUrl(event.target.value)}
-                placeholder="https://…/recitation.mp3"
-                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
-              />
-            </label>
-            <div className="flex items-end">
-              <input
-                ref={audioFileInput}
-                type="file"
-                accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a"
-                onChange={(event) => void uploadStartupAudio(event.target.files?.[0])}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => audioFileInput.current?.click()}
-                disabled={audioUploading}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 px-4 py-2.5 text-xs font-bold text-indigo-700 disabled:opacity-50 sm:w-auto"
-              >
-                <Upload className="h-4 w-4" />
-                {audioUploading ? 'Envoi…' : 'رفع ملف صوتي'}
-              </button>
-            </div>
+          <label className="block space-y-1 text-xs font-bold text-slate-600">
+            رابط URL للمقطع الصوتي (HTTPS direct : .mp3, .m4a, .ogg ou .wav)
+            <input
+              type="url"
+              value={startupAudioUrl}
+              onChange={(event) => setStartupAudioUrl(event.target.value)}
+              placeholder="https://…/recitation.mp3"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
+            />
+          </label>
+          <div className="space-y-2">
+            <button type="button" onClick={testStartupAudio} className="inline-flex min-h-10 items-center rounded-xl border border-indigo-200 px-4 py-2 text-xs font-bold text-indigo-700">
+              Tester la lecture
+            </button>
+            <audio
+              ref={startupAudioPreview}
+              controls
+              preload="none"
+              src={isDirectAudioUrl(startupAudioUrl) ? startupAudioUrl.trim() : undefined}
+              onError={() => setStartupAudioTestMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.')}
+              className="w-full"
+            />
+            {startupAudioTestMessage && <p role="status" className="text-xs font-semibold text-slate-600">{startupAudioTestMessage}</p>}
           </div>
-          <p className="text-[11px] text-slate-500">Lien direct HTTPS en .mp3 ou .m4a. L’audio ne démarre qu’après le bouton « دخول » de l’écran d’accueil.</p>
+          <aside className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-950">
+            Hébergez gratuitement votre fichier audio avec le palier gratuit de Cloudflare R2 ou sur Internet Archive. Après l’envoi, copiez le lien public direct du fichier (et non la page de partage) ; l’hébergeur doit autoriser la lecture depuis le navigateur (CORS). Aucun fichier n’est téléversé dans Firebase.
+          </aside>
+          <p className="text-[11px] text-slate-500">L’audio ne démarre qu’après le bouton « دخول » de l’écran d’accueil.</p>
           {startupMessage && <p role="status" className="text-xs font-semibold text-indigo-700">{startupMessage}</p>}
           <button
             type="button"
             onClick={() => void saveStartupSettings()}
-            disabled={startupSaving || audioUploading}
+            disabled={startupSaving}
             className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
           >
             <Save className="h-4 w-4" />

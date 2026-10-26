@@ -162,6 +162,7 @@ export interface StartupItem {
   text?: string;
   source?: string;
   repeat?: number;
+  imageUrl?: string;
   imageData?: string;
   audioUrl?: string;
   order: number;
