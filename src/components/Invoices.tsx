@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, serverTimestamp, where } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
@@ -13,25 +13,48 @@ import { APP_NAME } from '../config/brand';
 import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { PrintableTicket } from './PrintableTicket';
-import { where } from 'firebase/firestore';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface InvoicesProps {
   userProfile: UserProfile | null;
 }
 
+interface PurchaseInvoiceRecord {
+  id: string;
+  number?: string;
+  invoiceNumber?: string;
+  date?: any;
+  supplierName?: string;
+  supplierId?: string;
+  total?: number;
+  totalMilli?: number;
+}
+
+function toInvoiceDate(value: unknown): Date | null {
+  if (value && typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
+    return value.toDate();
+  }
+  const parsed = value instanceof Date ? value : value ? new Date(String(value)) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+}
+
 export default function Invoices({ userProfile }: InvoicesProps) {
   const navigate = useNavigate();
   const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState<PurchaseInvoiceRecord[]>([]);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [activeTab, setActiveTab] = useState<'sales' | 'purchases'>('sales');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [isNewInvoiceModalOpen, setIsNewInvoiceModalOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
 
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
+  const isStoreAdmin = userProfile?.role === 'admin' && (userProfile.ownerId || userProfile.uid) === userProfile.uid;
   
   const handlePrint = () => {
     if (!selectedInvoice) {
@@ -92,12 +115,20 @@ export default function Invoices({ userProfile }: InvoicesProps) {
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `settings/${ownerId}`);
     });
+    const unsubscribePurchases = isStoreAdmin
+      ? onSnapshot(query(collection(db, 'purchases'), where('ownerId', '==', ownerId)), snapshot => {
+        const purchases = snapshot.docs.map(item => ({ id: item.id, ...item.data() } as PurchaseInvoiceRecord));
+        purchases.sort((a, b) => (toInvoiceDate(b.date)?.getTime() || 0) - (toInvoiceDate(a.date)?.getTime() || 0));
+        setPurchaseInvoices(purchases);
+      }, error => handleFirestoreError(error, OperationType.LIST, 'purchases'))
+      : () => setPurchaseInvoices([]);
 
     return () => {
       unsubscribe();
       unsubscribeSettings();
+      unsubscribePurchases();
     };
-  }, [ownerId]);
+  }, [ownerId, isStoreAdmin]);
 
   useEffect(() => {
     if (isNewInvoiceModalOpen) {
@@ -385,11 +416,29 @@ export default function Invoices({ userProfile }: InvoicesProps) {
     }
   };
 
-  const filteredInvoices = invoices.filter(inv => 
-    inv.number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    inv.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (inv.clientCode && inv.clientCode.toLowerCase().includes(searchTerm.toLowerCase()))
+  const matchesDateRange = (value: unknown) => {
+    const date = toInvoiceDate(value);
+    if (!date) return !startDate && !endDate;
+    const start = startDate ? new Date(`${startDate}T00:00:00`) : null;
+    const end = endDate ? new Date(`${endDate}T23:59:59.999`) : null;
+    return (!start || date >= start) && (!end || date <= end);
+  };
+  const normalizedSearch = searchTerm.trim().toLocaleLowerCase('fr');
+  const filteredInvoices = invoices.filter(inv =>
+    (!normalizedSearch ||
+      inv.number.toLocaleLowerCase('fr').includes(normalizedSearch) ||
+      inv.clientName.toLocaleLowerCase('fr').includes(normalizedSearch) ||
+      (inv.clientCode || '').toLocaleLowerCase('fr').includes(normalizedSearch)) &&
+    matchesDateRange(inv.date)
   );
+  const filteredPurchases = purchaseInvoices.filter(purchase => {
+    const number = purchase.invoiceNumber || purchase.number || purchase.id;
+    const supplier = purchase.supplierName || purchase.supplierId || '';
+    return (!normalizedSearch ||
+      number.toLocaleLowerCase('fr').includes(normalizedSearch) ||
+      supplier.toLocaleLowerCase('fr').includes(normalizedSearch)) &&
+      matchesDateRange(purchase.date);
+  });
 
   return (
     <div className="space-y-6 relative">
@@ -405,32 +454,51 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Factures</h1>
-          <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mt-0.5">Gérez et téléchargez vos factures de vente</p>
+          <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Facturation</h1>
+          <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mt-0.5">Factures de vente et achats du magasin</p>
         </div>
-        <button
+        {activeTab === 'sales' && <button
           onClick={() => setIsNewInvoiceModalOpen(true)}
           className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all duration-350 shadow-lg shadow-emerald-600/15 group hover:-translate-y-0.5"
         >
           <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
           Nouvelle Facture
-        </button>
+        </button>}
       </div>
 
       <div className="bg-white rounded-3xl border border-slate-100 shadow-xs overflow-hidden premium-shadow">
-        <div className="p-5 border-b border-slate-100 bg-slate-50/20">
-          <div className="relative max-w-md">
+        <div className="flex flex-col gap-4 border-b border-slate-100 bg-slate-50/20 p-5">
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Type de factures">
+            <button type="button" role="tab" aria-selected={activeTab === 'sales'} onClick={() => setActiveTab('sales')}
+              className={`min-h-10 rounded-xl px-4 text-sm font-bold ${activeTab === 'sales' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+              Factures de vente
+            </button>
+            <button type="button" role="tab" aria-selected={activeTab === 'purchases'} onClick={() => setActiveTab('purchases')}
+              className={`min-h-10 rounded-xl px-4 text-sm font-bold ${activeTab === 'purchases' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+              Factures d’achat
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-56 flex-1">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Rechercher par numéro ou client..."
+              placeholder={activeTab === 'sales' ? 'Rechercher par numéro ou client...' : 'Rechercher par numéro ou fournisseur...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl focus:bg-white text-xs font-semibold text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all duration-300"
             />
           </div>
+          <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
+            Du <input type="date" value={startDate} max={endDate || undefined} onChange={event => setStartDate(event.target.value)} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2.5" />
+          </label>
+          <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
+            Au <input type="date" value={endDate} min={startDate || undefined} onChange={event => setEndDate(event.target.value)} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2.5" />
+          </label>
+          </div>
         </div>
 
+        {activeTab === 'sales' ? (
         <div className="overflow-x-auto text-[13px] font-medium text-slate-600">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -485,6 +553,38 @@ export default function Invoices({ userProfile }: InvoicesProps) {
             </tbody>
           </table>
         </div>
+        ) : !isStoreAdmin ? (
+          <p className="p-8 text-center text-sm font-semibold text-slate-500">Les factures d’achat sont réservées à l’administrateur du magasin.</p>
+        ) : (
+          <div className="overflow-x-auto text-[13px] font-medium text-slate-600">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 text-[10px] font-extrabold uppercase tracking-widest">
+                  <th className="px-6 py-4">N° Facture d’achat</th>
+                  <th className="px-6 py-4">Date</th>
+                  <th className="px-6 py-4">Fournisseur</th>
+                  <th className="px-6 py-4 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100/70">
+                {loading ? <tr><td colSpan={4} className="px-6 py-10 text-center text-gray-500">Chargement…</td></tr> :
+                  filteredPurchases.length === 0 ? <tr><td colSpan={4} className="px-6 py-10 text-center text-gray-500">Aucune facture d’achat enregistrée.</td></tr> :
+                  filteredPurchases.map(purchase => {
+                    const purchaseDate = toInvoiceDate(purchase.date);
+                    const total = typeof purchase.total === 'number' ? purchase.total : (Number(purchase.totalMilli) || 0) / 1000;
+                    return (
+                      <tr key={purchase.id} className="hover:bg-slate-50/60">
+                        <td className="px-6 py-4 font-bold text-gray-900">{purchase.invoiceNumber || purchase.number || `Achat-${purchase.id.slice(0, 8)}`}</td>
+                        <td className="px-6 py-4 text-sm text-gray-600">{purchaseDate ? format(purchaseDate, 'dd MMM yyyy', { locale: fr }) : 'Inconnue'}</td>
+                        <td className="px-6 py-4">{purchase.supplierName || purchase.supplierId || 'Fournisseur non renseigné'}</td>
+                        <td className="px-6 py-4 text-right font-black font-mono">{total.toFixed(3)} {storeSettings?.currency || 'DT'}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* New Invoice Modal */}
