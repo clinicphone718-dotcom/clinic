@@ -113,8 +113,9 @@ Le front statique ne peut pas exécuter les routes Express `/api/*`. Pour les fo
 
 1. Copiez l’URL HTTPS publique du service Render.
 2. Dans `public/_redirects`, remplacez `https://REMPLACER-PAR-LE-SERVICE.onrender.com` par cette URL, puis décommentez la règle `/api/*` (retirez le `#` initial). Gardez cette règle avant `/* /index.html 200`.
-3. Redéployez le site Netlify afin que le fichier `_redirects` actualisé soit publié.
-4. Vérifiez une requête API depuis le domaine Netlify et confirmez que `/healthz` répond directement sur le domaine Render.
+3. Laissez `VITE_API_URL` vide dans les variables du site Netlify : le client appellera `/api` sur sa propre origine et Netlify transmettra la requête à Render avec son jeton Firebase.
+4. Redéployez le site Netlify afin que le fichier `_redirects` actualisé soit publié.
+5. Vérifiez que `/healthz` répond directement sur l’URL Render, puis testez une fonctionnalité API authentifiée depuis le domaine Netlify. `/healthz` n’est pas une route `/api/*`.
 
 En variante, déployez le serveur Express et le front sur le même service Render : la commande `npm start` sert alors `dist` et `/api` sur une origine commune, sans proxy Netlify.
 

@@ -1,2 +1,3 @@
+# Remplacez l’hôte Render puis retirez le # pour activer le proxy API.
 # /api/*  https://REMPLACER-PAR-LE-SERVICE.onrender.com/api/:splat  200
 /*    /index.html   200
