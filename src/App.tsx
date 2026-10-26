@@ -26,6 +26,7 @@ import {
   Wrench,
   BookOpen,
   CircleDollarSign,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { UserProfile, Note } from './types';
@@ -40,17 +41,17 @@ const NAV_SECTIONS = [
     title: 'VENTE',
     items: [
       { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
-      { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
-      { id: 'sales', name: 'Historique', path: '/sales', icon: History },
-      { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
+      { id: 'pos', name: 'Vente (Caisse)', path: '/pos', icon: ShoppingCart },
+      { id: 'sales', name: 'Historique ventes', path: '/sales', icon: History },
+      { id: 'invoices', name: 'Facturation', path: '/invoices', icon: FileText },
       { id: 'invoices', name: 'Clôture de caisse', path: '/cash-session', icon: CircleDollarSign },
     ],
   },
   {
     title: 'ATELIER',
     items: [
-      { id: 'reparation', name: 'Partie Réparation', path: '/repairs', icon: Wrench },
-      { id: 'pieces', name: 'Pièces Détachées', path: '/parts', icon: Package },
+      { id: 'reparation', name: 'Réparations', path: '/repairs', icon: Wrench },
+      { id: 'pieces', name: 'Pièces détachées', path: '/parts', icon: Package },
     ],
   },
   {
@@ -71,8 +72,9 @@ const NAV_SECTIONS = [
     title: 'ADMINISTRATION',
     items: [
       { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
-      { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
+      { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
       { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
+      { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
     ],
   },
 ];
@@ -112,6 +114,7 @@ import Notes from './components/Notes';
 import Repairs from './components/Repairs';
 import Parts from './components/Parts';
 import Expenses from './components/Expenses';
+import Reports from './components/Reports';
 import CashSession from './components/CashSession';
 import { StartupProvider } from './components/StartupProvider';
 
@@ -866,6 +869,7 @@ export default function App() {
                 <Route path="/notes" element={hasMenuAccess(userProfile, 'notes') ? <Notes userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/expenses" element={userProfile?.role === 'admin' ? <Expenses userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/reports" element={isAdminOwner(userProfile) ? <Reports userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/startup" element={<Navigate to="/settings#startup-settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
                 <Route path="/settings" element={<Settings

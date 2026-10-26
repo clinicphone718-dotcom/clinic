@@ -37,6 +37,7 @@ import { cn } from '../lib/utils';
 import SalesVolumeChart from './SalesVolumeChart';
 import { can } from '../lib/permissions';
 import { computeSaleProfit, computeTotals, normalizeFinancialSettings, type SaleCostLine } from '../lib/financial';
+import { computeWorkshopSummary } from '../lib/workshopReports';
 
 // Helper component for printing high-quality A4 reports
 interface PrintableReportProps {
@@ -493,69 +494,15 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     };
   }, [sales, products, productBuyPriceMap, saleCostSnapshots, repairs, repairCostSnapshots, expenses, storeSettings, canViewBuyPrice, canViewMargin, isAdmin]);
 
-  const financialSummary = useMemo(() => {
-    const now = new Date();
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    if (financialPeriod === '7') start.setDate(start.getDate() - 6);
-    else if (financialPeriod === '30') start.setDate(start.getDate() - 29);
-    else if (financialPeriod === '90') start.setDate(start.getDate() - 89);
-    else if (financialPeriod === 'year') start.setMonth(0, 1);
-    else if (financialPeriod === 'all') start.setTime(0);
-    const getDate = (value: any) => value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value || 0);
-    const inRange = (value: any) => getDate(value) >= start && getDate(value) <= now;
-    const rangeSales = sales.filter(sale => inRange(sale.date));
-    const rangeRepairs = isAdmin ? repairs.filter(repair => inRange(repair.deliveredAt || repair.date)) : [];
-    const deliveredRepairs = rangeRepairs.filter(repair => repair.status === 'livre');
-    const rangeExpenses = isAdmin ? expenses.filter(expense => inRange(expense.date)) : [];
-    const salesRevenue = rangeSales.reduce((sum, sale) =>
-      sum + computeSaleProfit(sale, saleCostSnapshots[sale.id]).revenueExcludingTax, 0);
-    const laborRevenue = deliveredRepairs.reduce((sum, repair) => sum + (Number(repair.laborCost) || 0), 0);
-    const repairPartsRevenue = deliveredRepairs.reduce((sum, repair) =>
-      sum + (repair.parts || []).reduce((partSum: number, part: any) => partSum + (Number(part.total) || 0), 0), 0);
-    const repairRevenue = deliveredRepairs.reduce((sum, repair) => sum + computeTotals([
-      { total: Number(repair.laborCost) || 0 },
-      ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
-    ], Number(repair.discount) || 0, {
-      tvaEnabled: repair.tvaEnabled === true,
-      tva: repair.tvaRate,
-    }).taxableAmount, 0);
-    let repairPartsCost = 0;
-    let repairsComplete = true;
-    deliveredRepairs.forEach(repair => {
-      const costs = repairCostSnapshots[repair.id] || {};
-      (repair.parts || []).forEach((part: any) => {
-        const buyPrice = costs[part.productId] ?? part.unitBuyPrice;
-        if (typeof buyPrice !== 'number' || !Number.isFinite(buyPrice)) repairsComplete = false;
-        else repairPartsCost += buyPrice * (Number(part.quantity) || 0);
-      });
-    });
-    const saleMargins = rangeSales.map(sale => computeSaleProfit(sale, saleCostSnapshots[sale.id]));
-    const missingSaleCosts = saleMargins.filter(item => !item.complete).length;
-    const salesProfit = saleMargins.reduce((sum, item) => sum + (item.profit || 0), 0);
-    const repairsProfit = repairRevenue - repairPartsCost;
-    const grossProfit = canViewMargin && missingSaleCosts === 0 && repairsComplete
-      ? Math.round((salesProfit + repairsProfit + Number.EPSILON) * 1000) / 1000
-      : null;
-    const expensesTotal = rangeExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
-    const revenue = salesRevenue + repairRevenue;
-    return {
-      revenue,
-      collected: rangeSales.reduce((sum, sale) => sum + (Number(sale.paid) || 0), 0) +
-        rangeRepairs.reduce((sum, repair) => sum + (Number(repair.paid) || 0), 0),
-      debt: rangeSales.reduce((sum, sale) => sum + (Number(sale.debt) || 0), 0) +
-        rangeRepairs.reduce((sum, repair) => sum + (Number(repair.debt) || 0), 0),
-      grossProfit,
-      expenses: expensesTotal,
-      netProfit: grossProfit === null ? null : Math.round((grossProfit - expensesTotal + Number.EPSILON) * 1000) / 1000,
-      laborRevenue,
-      repairPartsRevenue,
-      repairPartsCost,
-      incompleteSales: missingSaleCosts,
-      incompleteRepairs: repairsComplete ? 0 : 1,
-      salesWithTva: rangeSales.filter(sale => Number(sale.tva) > 0).length,
-    };
-  }, [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, financialPeriod, canViewMargin, isAdmin]);
+  const financialSummary = useMemo(() => computeWorkshopSummary(
+    sales,
+    repairs,
+    expenses,
+    saleCostSnapshots,
+    repairCostSnapshots,
+    financialPeriod,
+    canViewMargin,
+  ), [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, financialPeriod, canViewMargin]);
 
   // Group ALL sales chronologically by day to build historical statistics dynamically
   const dailyRecords = useMemo(() => {
