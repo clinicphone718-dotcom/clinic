@@ -21,6 +21,8 @@ export interface Product {
   createdAt?: string;
 }
 
+import type { MessageTemplateKey } from './lib/messages';
+
 export interface Client {
   id: string;
   code?: string;
@@ -176,6 +178,8 @@ export interface StoreSettings {
   currency: string;
   address?: string;
   phone?: string;
+  whatsappCountryCode?: string;
+  messageTemplates?: Partial<Record<MessageTemplateKey, string>>;
   tva: number;
   tvaEnabled?: boolean;
   tvaOptIn?: boolean;

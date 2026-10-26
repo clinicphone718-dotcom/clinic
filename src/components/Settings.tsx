@@ -10,6 +10,7 @@ import { cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import { can } from '../lib/permissions';
 import { normalizeFinancialSettings } from '../lib/financial';
+import { DEFAULT_MESSAGE_TEMPLATES, MESSAGE_TEMPLATE_OPTIONS } from '../lib/messages';
 import { useStartup } from './StartupProvider';
 import { adhkarLibrary } from '../data/adhkar';
 import { verses } from '../data/verses';
@@ -418,6 +419,8 @@ export default function Settings({
     currency: '',
     address: '',
     phone: '',
+    whatsappCountryCode: '216',
+    messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES },
     tva: 0,
     tvaEnabled: false,
     deleteCode: '',
@@ -862,6 +865,8 @@ export default function Settings({
           currency: data.currency || '',
           address: data.address || '',
           phone: data.phone || '',
+          whatsappCountryCode: data.whatsappCountryCode || '216',
+          messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES, ...data.messageTemplates },
           tva: financialSettings.tva || 0,
           tvaEnabled: financialSettings.tvaEnabled === true,
           deleteCode: data.deleteCode || '',
@@ -881,6 +886,8 @@ export default function Settings({
           currency: 'DT',
           address: '',
           phone: '',
+          whatsappCountryCode: '216',
+          messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES },
           tva: 0,
           tvaEnabled: false,
           deleteCode: '',
@@ -905,7 +912,7 @@ export default function Settings({
       await setDoc(doc(db, 'settings', ownerId), {
         ...storeFormData,
         tvaOptIn: storeFormData.tvaEnabled,
-      });
+      }, { merge: true });
       setSuccess('Paramètres du magasin enregistrés avec succès !');
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
@@ -998,7 +1005,49 @@ export default function Settings({
                       placeholder="Ex: 71 000 000 ou 22 123 456"
                     />
                   </div>
+                  {userProfile?.role === 'admin' && (
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block font-bold">Indicatif téléphonique par défaut</label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-500">+</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          value={storeFormData.whatsappCountryCode}
+                          onChange={(e) => setStoreFormData({ ...storeFormData, whatsappCountryCode: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold transition-all outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
+                          placeholder="216"
+                        />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Par défaut : Tunisie (+216). Un numéro déjà international est conservé.</p>
+                    </div>
+                  )}
                 </div>
+
+                {userProfile?.role === 'admin' && (
+                  <section className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                    <div>
+                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Modèles WhatsApp / SMS</h3>
+                      <p className="mt-1 text-[10px] text-slate-500">Variables disponibles : {'{client}'}, {'{appareil}'}, {'{numero}'}, {'{montant_restant}'}, {'{nom_magasin}'}.</p>
+                    </div>
+                    {MESSAGE_TEMPLATE_OPTIONS.map(({ key, label }) => (
+                      <label key={key} className="block space-y-1 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                        {label}
+                        <textarea
+                          value={storeFormData.messageTemplates[key]}
+                          onChange={(e) => setStoreFormData({
+                            ...storeFormData,
+                            messageTemplates: { ...storeFormData.messageTemplates, [key]: e.target.value },
+                          })}
+                          rows={3}
+                          maxLength={1000}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-700"
+                        />
+                      </label>
+                    ))}
+                  </section>
+                )}
 
                 <div className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-100 my-2">
                   <div>

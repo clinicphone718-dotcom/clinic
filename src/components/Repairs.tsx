@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  collection, onSnapshot, addDoc, updateDoc, doc, query, where,
+  collection, onSnapshot, addDoc, updateDoc, arrayUnion, doc, query, where,
   serverTimestamp, runTransaction, getDoc, deleteDoc, type DocumentSnapshot, type Transaction
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
@@ -23,6 +23,8 @@ import { RepairTicket } from './RepairTicket';
 import { can } from '../lib/permissions';
 import { apiFetch } from '../lib/api';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
+import MessageComposer from './MessageComposer';
+import type { MessageTemplateKey } from '../lib/messages';
 
 interface RepairsProps {
   userProfile: UserProfile | null;
@@ -48,6 +50,25 @@ export const STATUS_STYLES: Record<RepairStatus, string> = {
 };
 
 export const ACTIVE_STATUSES: RepairStatus[] = ['recu', 'diagnostic', 'en_attente_piece', 'en_cours', 'termine'];
+
+function getRepairMessageTemplate(repair: Repair): MessageTemplateKey {
+  if (repair.status === 'en_attente_piece') return 'en_attente_piece';
+  if (repair.status === 'termine') return 'repare_pret';
+  if (repair.status === 'livre') return repair.debt > 0 ? 'rappel_paiement' : 'repare_pret';
+  return repair.debt > 0 ? 'rappel_paiement' : 'appareil_recu';
+}
+
+async function logRepairMessage(repair: Repair, channel: string, userLabel: string): Promise<void> {
+  const sentAt = new Date();
+  const formattedDate = format(sentAt, 'dd/MM/yyyy HH:mm');
+  await updateDoc(doc(db, 'repairs', repair.id), {
+    logs: arrayUnion({
+      date: sentAt.toISOString(),
+      note: `Message envoyé le ${formattedDate} par ${userLabel} via ${channel} (ouverture de l’application, envoi non confirmé).`,
+      by: userLabel,
+    } satisfies RepairLog),
+  });
+}
 
 interface RepairStockMovement {
   id: string;
@@ -722,6 +743,20 @@ export default function Repairs({ userProfile }: RepairsProps) {
                 <div className="flex items-center gap-3 text-xs text-slate-400 mt-1 font-medium">
                   <span className="flex items-center gap-1"><User className="w-3 h-3" /> {r.clientName || 'Sans client'}</span>
                   {r.date?.toDate && <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {format(r.date.toDate(), 'dd/MM/yyyy HH:mm')}</span>}
+                </div>
+                <div className="mt-2">
+                  <MessageComposer
+                    phone={r.clientPhone}
+                    clientName={r.clientName || 'Client'}
+                    appareil={`${r.deviceBrand || ''} ${r.deviceModel || ''}`.trim()}
+                    numero={r.number}
+                    montantRestant={`${(Number(r.debt) || 0).toFixed(3)} ${currency}`}
+                    nomMagasin={settings?.storeName || ''}
+                    indicatif={settings?.whatsappCountryCode || '216'}
+                    templates={settings?.messageTemplates}
+                    defaultTemplate={getRepairMessageTemplate(r)}
+                    onLog={(channel) => logRepairMessage(r, channel, currentUserLabel)}
+                  />
                 </div>
               </div>
               <div className="text-right shrink-0">

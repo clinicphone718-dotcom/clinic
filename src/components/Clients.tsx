@@ -8,6 +8,7 @@ import { Plus, Search, Edit2, Trash2, X, Phone, MapPin, Wallet, Coins, AlertCirc
 import { cn } from '../lib/utils';
 import { can, hasMenuAccess } from '../lib/permissions';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
+import MessageComposer from './MessageComposer';
 
 interface ClientsProps {
   userProfile: UserProfile | null;
@@ -345,6 +346,15 @@ export default function Clients({ userProfile }: ClientsProps) {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <MessageComposer
+                          phone={client.phone}
+                          clientName={client.name}
+                          montantRestant={`${(Number(client.debt) || 0).toFixed(3)} ${storeSettings?.currency || 'DT'}`}
+                          nomMagasin={storeSettings?.storeName || ''}
+                          indicatif={storeSettings?.whatsappCountryCode || '216'}
+                          templates={storeSettings?.messageTemplates}
+                          defaultTemplate="rappel_paiement"
+                        />
                         {canCash && client.debt > 0 && (
                           <button
                             onClick={() => openSettleModal(client)}
