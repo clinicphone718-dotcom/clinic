@@ -141,6 +141,7 @@ export default function Reports({ userProfile }: { userProfile: UserProfile | nu
                 <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Main d’œuvre</dt><dd className="font-mono font-bold tabular-nums">{money(summary.laborRevenue)} {currency}</dd></div>
                 <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Pièces (facturées)</dt><dd className="font-mono font-bold tabular-nums">{money(summary.repairPartsRevenue)} {currency}</dd></div>
                 <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Coût des pièces</dt><dd className="font-mono font-bold tabular-nums">{money(summary.repairPartsCost)} {currency}</dd></div>
+                <div className="flex justify-between gap-4 py-3"><dt className="text-slate-600">Ventes (TTC)</dt><dd className="font-mono font-bold tabular-nums">{money(summary.salesRevenue)} {currency}</dd></div>
                 <div className="flex justify-between gap-4 py-3 text-slate-900"><dt className="font-black">Total facturé</dt><dd className="font-mono font-black tabular-nums">{money(summary.repairRevenue)} {currency}</dd></div>
               </dl>
               {summary.incompleteRepairs > 0 && <p className="mt-2 text-xs font-semibold text-amber-700">Certains coûts historiques de pièces manquent ; le bénéfice brut n’est pas estimé.</p>}

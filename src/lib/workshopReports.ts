@@ -5,6 +5,7 @@ export type ReportPeriod = 'today' | '7' | '30' | '90' | 'year' | 'all';
 
 export interface WorkshopSummary {
   repairCount: number;
+  salesRevenue: number;
   revenue: number;
   collected: number;
   debt: number;
@@ -89,8 +90,9 @@ export function computeWorkshopSummary(
     ? roundMoney(salesProfit + repairRevenueExcludingTax - repairPartsCost)
     : null;
   const expensesTotal = roundMoney(rangeExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0));
+  const salesRevenue = roundMoney(rangeSales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0));
   const repairRevenue = deliveredRepairs.reduce((sum, repair) => sum + (Number(repair.total) || 0), 0);
-  const revenue = roundMoney(rangeSales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0) + repairRevenue);
+  const revenue = roundMoney(salesRevenue + repairRevenue);
   const repairStatuses = rangeRepairs.reduce<Record<string, number>>((counts, repair) => {
     counts[repair.status] = (counts[repair.status] || 0) + 1;
     return counts;
@@ -98,6 +100,7 @@ export function computeWorkshopSummary(
 
   return {
     repairCount: rangeRepairs.length,
+    salesRevenue,
     revenue,
     collected: roundMoney(rangeSales.reduce((sum, sale) => sum + (Number(sale.paid) || 0), 0) +
       rangeRepairs.reduce((sum, repair) => sum + (Number(repair.paid) || 0), 0)),
