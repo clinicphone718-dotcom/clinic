@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { collection, doc, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, where } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
-import { CircleDollarSign, Search } from 'lucide-react';
+import { CircleDollarSign, Plus, Search, X } from 'lucide-react';
 import { auth, db } from '../firebase';
 import { UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
@@ -44,6 +44,7 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [isFormOpen, setIsFormOpen] = useState(false);
 
   useEffect(() => {
     if (userProfile?.role !== 'admin' || !ownerId || !auth.currentUser) {
@@ -80,15 +81,17 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
     });
   }, [expenses, period, selectedMonth, search]);
 
-  const monthlyTotal = useMemo(() => {
+  const periodSummary = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
-    return expenses
-      .filter(expense => {
-        const expenseDate = toDate(expense.date);
-        return expenseDate.getFullYear() === year && expenseDate.getMonth() === month - 1;
-      })
-      .reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
-  }, [expenses, selectedMonth]);
+    const records = period === 'all' ? expenses : expenses.filter(expense => {
+      const expenseDate = toDate(expense.date);
+      return expenseDate.getFullYear() === year && expenseDate.getMonth() === month - 1;
+    });
+    return {
+      total: records.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
+      count: records.length,
+    };
+  }, [expenses, selectedMonth, period]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -128,6 +131,7 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
       setLabel('');
       setAmount('');
       setMessage('Dépense enregistrée.');
+      setIsFormOpen(false);
     } catch (cause) {
       const messageText = cause instanceof Error ? cause.message : 'Erreur inconnue.';
       setError(`Impossible d'enregistrer la dépense : ${messageText}`);
@@ -144,12 +148,21 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
     <div className="mx-auto max-w-6xl space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-indigo-500">Gestion financière</p>
+          <p className="text-sm text-slate-500">Chaque montant retiré de la caisse : achats de pièces, charges, dépenses journalières</p>
           <h1 className="mt-1 text-3xl font-black text-slate-900">Dépenses</h1>
         </div>
-        <div className="rounded-2xl border border-rose-100 bg-rose-50 px-5 py-3 text-right">
-          <p className="text-xs font-bold uppercase tracking-wider text-rose-500">Total du mois</p>
-          <p className="mt-1 font-mono text-xl font-black text-rose-700">{monthlyTotal.toFixed(3)} DT</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="rounded-2xl border border-rose-100 bg-rose-50 px-5 py-3 text-right">
+            <p className="text-xs font-bold uppercase tracking-wider text-rose-500">
+              {period === 'all' ? 'Total des dépenses (tout)' : 'Total des dépenses du mois'}
+            </p>
+            <p className="mt-1 font-mono text-xl font-black text-rose-700">{periodSummary.total.toFixed(3)} DT</p>
+            <p className="text-xs font-semibold text-rose-600">{periodSummary.count} opération{periodSummary.count === 1 ? '' : 's'}</p>
+          </div>
+          <button type="button" onClick={() => { setError(''); setMessage(''); setIsFormOpen(true); }} disabled={!session}
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-emerald-600 px-4 font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+            <Plus className="h-4 w-4" /> Nouvelle dépense
+          </button>
         </div>
       </header>
 
@@ -158,7 +171,19 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
         {!cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-black text-white">Ouvrir la caisse</button>}
       </div>}
 
-      <form onSubmit={submit} className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-6">
+      {message && <p role="status" className="text-sm font-semibold text-emerald-700">{message}</p>}
+
+      {isFormOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-4" onMouseDown={event => {
+        if (event.target === event.currentTarget && !saving) setIsFormOpen(false);
+      }}>
+      <form onSubmit={submit} className="grid w-full max-w-3xl gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xl sm:p-6 md:grid-cols-6">
+        <div className="md:col-span-6 flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+          <div>
+            <h2 className="text-lg font-black text-slate-900">Nouvelle dépense</h2>
+            <p className="mt-1 text-xs text-slate-500">La dépense sera liée à la caisse actuellement ouverte.</p>
+          </div>
+          <button type="button" onClick={() => setIsFormOpen(false)} disabled={saving} aria-label="Fermer" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"><X className="h-5 w-5" /></button>
+        </div>
         <label className="md:col-span-2">
           <span className="mb-1 block text-xs font-bold text-slate-600">Libellé</span>
           <input value={label} onChange={event => setLabel(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5" required maxLength={120} />
@@ -178,19 +203,19 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
           <input type="number" min="0.001" step="0.001" value={amount} onChange={event => setAmount(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5" required />
         </label>
         <label>
-          <span className="mb-1 block text-xs font-bold text-slate-600">Mode</span>
+          <span className="mb-1 block text-xs font-bold text-slate-600">Mode de paiement</span>
           <select value={mode} onChange={event => setMode(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5">
             {PAYMENT_MODES.map(value => <option key={value}>{value}</option>)}
           </select>
         </label>
         <div className="flex items-end md:col-span-2">
-          <button type="submit" disabled={saving || !session} className="min-h-11 w-full rounded-xl bg-indigo-600 px-4 font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+          <button type="submit" disabled={saving || !session} className="min-h-11 w-full rounded-xl bg-emerald-600 px-4 font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
             {saving ? 'Enregistrement…' : 'Enregistrer la dépense'}
           </button>
         </div>
-        {message && <p role="status" className="md:col-span-6 text-sm font-semibold text-emerald-700">{message}</p>}
         {error && <p role="alert" className="md:col-span-6 text-sm font-semibold text-rose-700">{error}</p>}
       </form>
+      </div>}
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
@@ -198,10 +223,10 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Rechercher une dépense…" className="w-full rounded-xl border border-slate-200 py-2.5 pl-9 pr-3 text-sm" />
           </div>
-          <select value={period} onChange={event => setPeriod(event.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm">
-            <option value="month">Ce mois</option>
-            <option value="all">Tout</option>
-          </select>
+          <label className="flex min-h-10 items-center gap-2 rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-700">
+            <input type="checkbox" checked={period === 'all'} onChange={event => setPeriod(event.target.checked ? 'all' : 'month')} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+            Tout
+          </label>
           {period === 'month' && (
             <input type="month" value={selectedMonth} onChange={event => setSelectedMonth(event.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" aria-label="Mois des dépenses" />
           )}
@@ -210,7 +235,7 @@ export default function Expenses({ userProfile }: { userProfile: UserProfile | n
           filteredExpenses.length === 0 ? (
             <div className="p-10 text-center">
               <CircleDollarSign className="mx-auto h-9 w-9 text-slate-300" />
-              <p className="mt-3 font-semibold text-slate-600">Aucune dépense pour cette période.</p>
+              <p className="mt-3 font-semibold text-slate-600">Aucune dépense</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
