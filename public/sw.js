@@ -47,7 +47,7 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin ||
-      url.pathname.startsWith('/api/') || request.destination === 'audio' ||
+      url.pathname === '/api' || url.pathname.startsWith('/api/') || request.destination === 'audio' ||
       /\.(?:mp3|m4a|aac|ogg|wav)(?:$|\?)/i.test(url.pathname)) return;
 
   if (request.mode === 'navigate') {
