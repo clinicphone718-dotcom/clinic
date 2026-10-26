@@ -441,7 +441,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         { total: Number(repair.laborCost) || 0 },
         ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
       ], Number(repair.discount) || 0, {
-        tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+        tvaEnabled: repair.tvaEnabled === true,
         tva: repair.tvaRate,
       });
       repairProfit += totals.taxableAmount - partCost;
@@ -517,7 +517,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       { total: Number(repair.laborCost) || 0 },
       ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
     ], Number(repair.discount) || 0, {
-      tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+      tvaEnabled: repair.tvaEnabled === true,
       tva: repair.tvaRate,
     }).taxableAmount, 0);
     let repairPartsCost = 0;
@@ -621,7 +621,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
           { total: Number(repair.laborCost) || 0 },
           ...(repair.parts || []).map((part: any) => ({ total: Number(part.total) || 0 })),
         ], Number(repair.discount) || 0, {
-          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
+          tvaEnabled: repair.tvaEnabled === true,
           tva: repair.tvaRate,
         });
         record.revenue += totals.taxableAmount;

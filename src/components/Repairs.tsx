@@ -474,7 +474,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
         { total: Number(r.laborCost) || 0 },
         ...(r.parts || []).map(part => ({ total: Number(part.total) || 0 })),
       ], discount, {
-        tvaEnabled: r.tvaEnabled === true && r.tvaOptIn === true,
+        tvaEnabled: r.tvaEnabled === true,
         tva: r.tvaRate,
       });
       const revenue = totals.taxableAmount;
@@ -961,8 +961,8 @@ export function RepairForm({
   const partsTotal = parts.reduce((s, p) => s + p.total, 0);
   const financialSettings = isEdit
     ? {
-      tvaEnabled: repair?.tvaEnabled === true && repair?.tvaOptIn === true,
-      tva: repair?.tvaOptIn === true ? repair?.tvaRate || 0 : 0,
+      tvaEnabled: repair?.tvaEnabled === true,
+      tva: repair?.tvaEnabled === true ? repair?.tvaRate || 0 : 0,
       tvaOptIn: repair?.tvaOptIn === true,
     }
     : settings;
@@ -1598,8 +1598,8 @@ export function RepairDetail({
         { total: Number(repair.laborCost) || 0 },
         ...(repair.parts || []).map(part => ({ total: Number(part.total) || 0 })),
       ], discount, {
-        tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
-        tva: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
+        tvaEnabled: repair.tvaEnabled === true,
+        tva: repair.tvaEnabled === true ? repair.tvaRate || 0 : 0,
       });
       const actualDiscount = Math.max(0, Math.round((repair.total - deliveryTotals.total) * 1000) / 1000);
       const dueAfterDiscount = Math.max(0, Math.round((repair.debt - actualDiscount) * 1000) / 1000);
@@ -1642,9 +1642,9 @@ export function RepairDetail({
           total: newTotal,
           subtotal: deliveryTotals.subtotal,
           tva: deliveryTotals.tva,
-          tvaEnabled: repair.tvaEnabled === true && repair.tvaOptIn === true,
-          tvaRate: repair.tvaOptIn === true ? repair.tvaRate || 0 : 0,
-          tvaOptIn: repair.tvaOptIn === true,
+          tvaEnabled: repair.tvaEnabled === true,
+          tvaRate: repair.tvaEnabled === true ? repair.tvaRate || 0 : 0,
+          tvaOptIn: repair.tvaEnabled === true,
           paid: newPaid,
           debt: 0,
           discount: actualDiscount,

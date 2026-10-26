@@ -53,11 +53,11 @@ export function roundMoney(value: number): number {
 export function normalizeFinancialSettings(
   settings: FinancialSettings | null | undefined,
 ): FinancialSettings {
-  const optedIn = settings?.tvaOptIn === true;
+  const enabled = settings?.tvaEnabled === true;
   return {
-    tvaEnabled: optedIn && settings?.tvaEnabled === true,
-    tva: optedIn ? Math.max(0, Number(settings?.tva) || 0) : 0,
-    tvaOptIn: optedIn,
+    tvaEnabled: enabled,
+    tva: enabled ? Math.max(0, Number(settings?.tva) || 0) : 0,
+    tvaOptIn: enabled,
   };
 }
 
