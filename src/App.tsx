@@ -29,11 +29,12 @@ import {
   BarChart3,
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { UserProfile, Note } from './types';
+import type { UserProfile, Note, CashSession as CashSessionRecord } from './types';
 import { getPendingOperations, syncPendingOperations } from './lib/offlineManager';
 import { hasMenuAccess } from './lib/permissions';
 import { APP_LOGO_URL, APP_NAME, APP_TAGLINE } from './config/brand';
 import { ALLOW_SELF_SIGNUP } from './config/firebase';
+import { useCashSession } from './lib/cashSessions';
 export { hasMenuAccess } from './lib/permissions';
 
 const NAV_SECTIONS = [
@@ -62,18 +63,13 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    title: 'OUTILS',
-    items: [
-      { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
-      { id: 'startup', name: 'Coran & Adhkar', path: '/settings#startup-settings', icon: BookOpen, adminOnly: true },
-    ],
-  },
-  {
-    title: 'ADMINISTRATION',
-    items: [
-      { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
-      { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
-      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
+  title: 'GESTION',
+  items: [
+    { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
+    { id: 'startup', name: 'Coran & Adhkar', path: '/settings#startup-settings', icon: BookOpen, adminOnly: true },
+    { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
+    { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
+    { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
       { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
     ],
   },
@@ -207,7 +203,9 @@ function Sidebar({
   isOnline,
   pendingCount,
   syncing,
-  handleTriggerSync
+  handleTriggerSync,
+  cashSession,
+  cashSessionLoading,
 }: { 
   isOpen: boolean; 
   setIsOpen: (v: boolean) => void; 
@@ -219,6 +217,8 @@ function Sidebar({
   pendingCount: number;
   syncing: boolean;
   handleTriggerSync: () => void;
+  cashSession: CashSessionRecord | null;
+  cashSessionLoading: boolean;
 }) {
   const location = useLocation();
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
@@ -236,34 +236,30 @@ function Sidebar({
       )}
       
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-[min(19rem,calc(100vw-2rem))] border-r border-slate-200/70 bg-white/95 shadow-xl shadow-slate-900/5 backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 lg:w-64 lg:shadow-sm",
+        "fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-1rem))] border-r border-[#2A2A2A] bg-[#0A0A0A] text-[#F0F0F0] shadow-xl shadow-black/20 transition-transform duration-300 lg:translate-x-0 lg:w-72 lg:shadow-none",
         isOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         <div className="h-full flex flex-col">
-          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-5">
-            <h1 className="text-2xl font-black flex flex-col leading-none font-display">
-              <span className="flex items-center gap-2 tracking-tight">
-                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-7 w-7 rounded-lg object-cover" /> : (
-                <ShoppingCart className="w-7 h-7 text-indigo-600 fill-indigo-100/40 animate-pulse" />
-                )}
-                <span className="bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 bg-clip-text text-transparent">
-                  {APP_NAME}
-                </span>
-              </span>
-              <span className="text-[9px] font-black uppercase tracking-widest bg-gradient-to-r from-indigo-500 to-cyan-500 bg-clip-text text-transparent mt-1.5 font-sans">
-                {APP_TAGLINE}
-              </span>
-            </h1>
-            <button onClick={() => setIsOpen(false)} className="lg:hidden p-1.5 hover:bg-slate-50 rounded-lg transition-colors">
-              <X className="w-5 h-5 text-slate-400" />
+          <div className="flex items-center justify-between px-5 pt-7">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-white text-[#0A0A0A]">
+                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : <Wrench className="h-6 w-6" />}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-display text-[22px] font-bold leading-tight tracking-tight text-white">{APP_NAME}</p>
+                <p className="mt-0.5 truncate text-[10.5px] font-bold uppercase tracking-[0.14em] text-[#A3A3A3]">{APP_TAGLINE}</p>
+              </div>
+            </div>
+            <button onClick={() => setIsOpen(false)} aria-label="Fermer le menu" className="ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#D4D4D4] transition-colors hover:bg-[#1C1C1C] lg:hidden">
+              <X className="h-5 w-5" />
             </button>
           </div>
 
-          <nav className="flex-1 space-y-5 overflow-y-auto px-4 py-6">
+          <nav aria-label="Navigation principale" className="flex-1 space-y-1 overflow-y-auto px-[18px] py-6">
             {navSections.map(section => (
               <section key={section.title} aria-label={section.title}>
-                <h2 className="mb-2 px-3 text-[9px] font-black tracking-[0.16em] text-slate-400">{section.title}</h2>
-                <div className="space-y-1">
+                <h2 className="px-[14px] pb-1 pt-4 text-[10.5px] font-bold uppercase tracking-[0.16em] text-[#8A8A8A]">{section.title}</h2>
+                <div className="space-y-[3px]">
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const isActive = item.path === '/settings#startup-settings'
@@ -275,19 +271,19 @@ function Sidebar({
                         to={item.path}
                         onClick={() => setIsOpen(false)}
                         className={cn(
-                          "flex min-h-10 items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all duration-200 relative group",
+                          "relative flex min-h-12 items-center gap-[14px] rounded-[14px] px-4 py-2.5 text-[14.5px] font-semibold transition-colors duration-200 group",
                           isActive
-                            ? "app-nav-active bg-indigo-600 text-white shadow-lg shadow-indigo-600/15"
-                            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                            ? "bg-white font-bold text-[#0A0A0A]"
+                            : "text-[#D4D4D4] hover:bg-[#1C1C1C]"
                         )}
                         aria-current={isActive ? 'page' : undefined}
                       >
-                        <Icon className={cn("h-4 w-4 transition-transform group-hover:scale-110", isActive ? "text-white" : "text-slate-400")} />
+                        <Icon className="h-5 w-5 shrink-0" />
                         <span className="flex-1">{item.name}</span>
                         {item.id === 'notes' && todayNotesCount > 0 && (
                           <span className={cn(
                             "min-w-[18px] rounded-full px-2 py-0.5 text-center text-[10px] font-black",
-                            isActive ? "bg-white text-indigo-600" : "bg-rose-500 text-white"
+                            isActive ? "bg-[#0A0A0A] text-white" : "bg-[#B3261E] text-white"
                           )}>
                             {todayNotesCount}
                           </span>
@@ -301,36 +297,49 @@ function Sidebar({
           </nav>
 
           {/* PWA / Offline Status Cards in Sidebar */}
-          <div className="px-4 py-3 border-t border-slate-100/60 bg-slate-50/30 space-y-3">
+          <div className="space-y-3 px-[18px] py-3">
+            <div className="flex flex-col gap-3 rounded-[18px] border border-[#2A2A2A] bg-[#141414] p-4">
+              <div className="flex items-center gap-2.5">
+                <span className={cn("h-2.5 w-2.5 rounded-full", cashSession ? "bg-white" : "bg-[#8A8A8A]")} />
+                <span className="text-xs font-bold uppercase tracking-[0.08em] text-white">{cashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}</span>
+              </div>
+              {cashSession && <p className="text-[13px] font-medium text-[#BDBDBD]">Session depuis {cashSession.openedAt?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) || '—'}, par {userProfile?.name || userProfile?.email || 'Utilisateur'}</p>}
+              <Link to="/cash-session" onClick={() => setIsOpen(false)} className="flex min-h-[46px] items-center justify-center rounded-xl border-2 border-white px-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-[#0A0A0A]">
+                {cashSession ? 'Clôturer la caisse' : 'Ouvrir la caisse'}
+              </Link>
+            </div>
+          </div>
+
+          <div className="border-t border-[#2A2A2A] px-[18px] py-3">
             {/* Connection and Sync Status */}
             {!isOnline ? (
-              <div className="p-3 bg-amber-50/70 border border-amber-100 rounded-xl text-amber-800 text-xs">
-                <div className="flex items-center gap-2 font-black uppercase tracking-wider text-[10px] mb-1">
-                  <WifiOff className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-[#D4D4D4]">
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-white">
+                  <WifiOff className="h-3.5 w-3.5 animate-pulse text-white" />
                   Mode Hors-ligne
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500">
+                <p className="text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
                   Modifications sauvegardées localement. {pendingCount > 0 ? `${pendingCount} opération(s) en attente.` : 'Prêt pour reconnexion.'}
                 </p>
               </div>
             ) : pendingCount > 0 ? (
-              <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl text-indigo-800 text-xs">
-                <div className="flex items-center justify-between font-black uppercase tracking-wider text-[10px] mb-1">
+              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
+                <div className="mb-1 flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
                   <span className="flex items-center gap-1.5">
-                    <RefreshCcw className={cn("w-3.5 h-3.5 text-indigo-500", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-white", syncing && "animate-spin")} />
                     Synchronisation
                   </span>
-                  <span className="bg-indigo-600 text-white px-1.5 py-0.5 rounded-full text-[9px]">
+                  <span className="rounded-full bg-white px-1.5 py-0.5 text-[9px] text-[#0A0A0A]">
                     {pendingCount}
                   </span>
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500 mb-2">
+                <p className="mb-2 text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
                   Des modifications locales sont en attente d'envoi.
                 </p>
                 <button
                   disabled={syncing}
                   onClick={handleTriggerSync}
-                  className="w-full py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors"
+                  className="min-h-11 w-full rounded-lg border border-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white transition-colors hover:bg-white hover:text-[#0A0A0A] disabled:opacity-50"
                 >
                   {syncing ? 'En cours...' : 'Synchroniser maintenant'}
                 </button>
@@ -339,16 +348,16 @@ function Sidebar({
 
             {/* Install Prompt for Android / Desktop */}
             {deferredPrompt && (
-              <div className="p-3 bg-gradient-to-br from-indigo-50/60 to-cyan-50/60 border border-indigo-100/60 rounded-xl text-indigo-950 text-xs shadow-xs">
-                <div className="font-black uppercase tracking-wider text-[10px] text-indigo-700 mb-1">
+              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-white">
                   ✨ Installer l'App
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500 mb-2.5">
+                <p className="mb-2.5 text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
                   Lancez {APP_NAME} en plein écran directement depuis votre écran d'accueil.
                 </p>
                 <button
                   onClick={handleInstallApp}
-                  className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#0A0A0A] transition-colors hover:bg-[#E2E2DF]"
                 >
                   <Package className="w-3.5 h-3.5" />
                   Installer maintenant
@@ -358,25 +367,25 @@ function Sidebar({
 
             {/* Install Prompt Guide for iOS */}
             {isIOS && !isStandalone && (
-              <div className="p-3 bg-gradient-to-br from-indigo-50/60 to-violet-50/60 border border-indigo-100/60 rounded-xl text-indigo-950 text-xs">
-                <div className="font-black uppercase tracking-wider text-[10px] text-indigo-700 mb-1">
+              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-white">
                   📲 Installer sur iPhone
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500">
+                <p className="text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
                   Appuyez sur <span className="font-bold">Partager</span> (<span className="text-[13px]">⎋</span>) puis sur <span className="font-bold">"Sur l'écran d'accueil"</span> (<span className="text-[13px]">⊕</span>).
                 </p>
               </div>
             )}
           </div>
 
-          <div className="border-t border-slate-100 bg-white/80 p-4">
-            <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-indigo-100 text-sm font-black text-indigo-700">
+          <div className="border-t border-[#2A2A2A] p-4">
+            <div className="mb-3 flex items-center gap-3 px-1.5 py-1">
+              <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#3A3A3A] font-display text-base font-bold text-white">
                 {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : (userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-bold text-slate-800">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
-                <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
+                <p className="truncate text-sm font-bold text-white">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
+                <p className="mt-0.5 text-xs font-medium text-[#A3A3A3]">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
               </div>
             </div>
             <button
@@ -386,9 +395,9 @@ function Sidebar({
                 await signOut(auth);
                 window.location.reload();
               }}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-xs uppercase tracking-wider font-extrabold text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors"
+              className="flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-3 text-xs font-extrabold uppercase tracking-wider text-[#F0F0F0] transition-colors hover:bg-[#1C1C1C]"
             >
-              <LogOut className="w-4 h-4 text-red-500" />
+              <LogOut className="h-4 w-4 text-[#D4D4D4]" />
               Déconnexion
             </button>
           </div>
@@ -458,6 +467,7 @@ export default function App() {
     () => window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as any).standalone),
   );
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const { session: activeCashSession, loading: cashSessionLoading } = useCashSession(userProfile);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -816,7 +826,7 @@ export default function App() {
     <ErrorBoundary>
       <Router>
         <StartupProvider userProfile={userProfile} online={isOnline}>
-        <div className="min-h-screen bg-slate-50/50 flex" onClick={() => {
+        <div className="flex min-h-screen bg-[#F4F4F2]" onClick={() => {
           if (showNotesPopover) setShowNotesPopover(false);
         }}>
           <Sidebar 
@@ -830,27 +840,37 @@ export default function App() {
             pendingCount={pendingCount}
             syncing={syncing}
             handleTriggerSync={handleTriggerSync}
+            cashSession={activeCashSession}
+            cashSessionLoading={cashSessionLoading}
           />
           
-          <main className="flex-1 lg:pl-64 min-h-screen flex flex-col">
-            <header className="h-16 bg-white/80 backdrop-blur-md border-b border-slate-100 flex items-center justify-between px-4 lg:px-8 sticky top-0 z-30 shadow-xs">
+          <main className="flex min-h-screen flex-1 flex-col lg:pl-72">
+            <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-white lg:border-[#E2E2DF] lg:bg-[#F4F4F2] lg:px-10 lg:text-[#0A0A0A]">
               <button 
                 onClick={() => setSidebarOpen(true)}
-                className="lg:hidden p-2 text-slate-500 hover:bg-slate-50 rounded-xl transition-colors"
+                aria-label="Ouvrir le menu"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#1C1C1C] text-white transition-colors hover:bg-[#2A2A2A] lg:hidden"
               >
-                <Menu className="w-5 h-5" />
+                <Menu className="h-5 w-5" />
               </button>
+              <div className="min-w-0 flex-1 lg:hidden">
+                <p className="truncate font-display text-lg font-bold leading-tight tracking-tight">{APP_NAME}</p>
+                <p className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-white">
+                  <span className={cn("h-2 w-2 rounded-full", activeCashSession ? "bg-white" : "bg-[#8A8A8A]")} />
+                  {activeCashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}
+                </p>
+              </div>
 
               {/* Online/Offline Status Indicator */}
-              <div className="flex items-center gap-2">
+              <div className="hidden items-center gap-2 lg:flex">
                 {isOnline ? (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[10px] font-black uppercase tracking-wider text-emerald-700 font-mono animate-in fade-in duration-300">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-[#0A0A0A] px-4 text-[11.5px] font-bold uppercase tracking-[0.1em] text-white">
+                    <span className="h-2 w-2 rounded-full bg-white" />
                     <span className="hidden sm:inline">En ligne</span>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 border border-rose-200 rounded-xl text-[10px] font-black uppercase tracking-wider text-rose-700 font-mono animate-pulse">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mr-0.5 animate-ping" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-[#FBDDD5] px-4 text-[11.5px] font-bold uppercase tracking-[0.1em] text-[#8A210A]">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-[#B3261E]" />
                     <span>Hors ligne</span>
                   </div>
                 )}
@@ -860,23 +880,23 @@ export default function App() {
                     onClick={handleTriggerSync}
                     disabled={syncing || !isOnline}
                     className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-[10px] font-black uppercase tracking-wider transition-all",
+                      "flex min-h-10 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all",
                       isOnline
-                        ? "bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800 shadow-3xs cursor-pointer"
-                        : "bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed"
+                        ? "cursor-pointer border-[#E2E2DF] bg-white text-[#2A2A2A] hover:bg-[#F4F4F2]"
+                        : "cursor-not-allowed border-[#E2E2DF] bg-[#E2E2DF] text-[#5C5C5C]"
                     )}
                     title={isOnline ? "Des opérations sont en attente de synchronisation. Cliquez pour synchroniser." : "Les opérations seront synchronisées dès le retour de la connexion."}
                   >
-                    <RefreshCcw className={cn("w-3.5 h-3.5 text-amber-600", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#3A3A3A]", syncing && "animate-spin")} />
                     <span>{pendingCount} en attente</span>
                   </button>
                 )}
               </div>
               
               {/* Interactive Date & Notes Notification Badge widget */}
-              <div className="flex items-center gap-2 lg:gap-3.5 ml-2 sm:ml-4 relative" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-black text-slate-700 shadow-3xs font-mono">
-                  <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+              <div className="relative ml-auto flex items-center gap-2 lg:ml-4 lg:gap-3.5" onClick={(e) => e.stopPropagation()}>
+                <div className="hidden min-h-10 items-center gap-2 rounded-full border border-[#E2E2DF] bg-white px-4 text-[13.5px] font-semibold lg:flex">
+                  <Calendar className="h-4 w-4 text-[#3A3A3A]" />
                   <span>{getFormattedDate()}</span>
                 </div>
 
@@ -885,17 +905,17 @@ export default function App() {
                   <button
                     onClick={() => setShowNotesPopover(!showNotesPopover)}
                     className={cn(
-                      "p-2 rounded-xl border transition-all duration-300 relative cursor-pointer",
+                      "relative flex h-11 w-11 items-center justify-center rounded-full border transition-colors duration-300",
                       headerNotificationCount > 0
-                        ? "bg-amber-50 hover:bg-amber-100 border-amber-200/60 text-amber-600 shadow-sm"
-                        : "bg-slate-50 hover:bg-slate-100 border-slate-100 text-slate-400"
+                        ? "border-[#E2E2DF] bg-white text-[#0A0A0A] hover:bg-[#F4F4F2] lg:border-[#E2E2DF]"
+                        : "border-[#2A2A2A] bg-[#1C1C1C] text-white hover:bg-[#2A2A2A] lg:border-[#E2E2DF] lg:bg-white lg:text-[#0A0A0A] lg:hover:bg-[#F4F4F2]"
                     )}
                     title={headerNotificationCount > 0 ? `${headerNotificationCount} notification(s)` : "Aucune notification"}
                     aria-label={`Notifications${headerNotificationCount ? ` (${headerNotificationCount})` : ''}`}
                   >
-                    <Bell className={cn("w-4 h-4", headerNotificationCount > 0 && "animate-bounce duration-1000")} />
+                    <Bell className="h-[19px] w-[19px]" />
                     {headerNotificationCount > 0 && (
-                      <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-[9px] text-white font-black rounded-full flex items-center justify-center border-2 border-white shadow-xs">
+                      <span className="absolute right-1 top-1 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#B3261E] px-1 text-[10px] font-bold text-white">
                         {headerNotificationCount}
                       </span>
                     )}
@@ -960,23 +980,22 @@ export default function App() {
                     aria-label="Notifications"
                     title="Notifications"
                     disabled
-                    className="p-2 rounded-xl border border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed"
+                    className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full border border-[#2A2A2A] bg-[#1C1C1C] text-white lg:border-[#E2E2DF] lg:bg-white lg:text-[#5C5C5C]"
                   >
                     <Bell className="w-4 h-4" />
                   </button>
                 )}
               </div>
 
-              <div className="flex-1"></div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-slate-500 font-semibold hidden sm:block bg-slate-100 px-3 py-1 rounded-full">{user.email}</span>
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center text-white font-black font-display text-sm shadow-md shadow-indigo-600/15">
+              <div className="hidden items-center gap-3 lg:flex">
+                <span className="max-w-64 truncate rounded-full border border-[#E2E2DF] bg-white px-[18px] py-2 text-[13.5px] font-semibold">{user.email}</span>
+                <div className="flex h-[34px] w-[34px] items-center justify-center overflow-hidden rounded-full bg-[#3A3A3A] text-sm font-bold text-white">
                   {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt={APP_NAME} className="h-full w-full rounded-xl object-cover" /> : user.email?.[0].toUpperCase()}
                 </div>
               </div>
             </header>
  
-            <div className="mx-auto w-full max-w-[1600px] flex-1 p-4 lg:p-8">
+            <div className="mx-auto w-full max-w-[1600px] flex-1 p-4 lg:px-10 lg:py-7">
               <Routes>
                 <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
