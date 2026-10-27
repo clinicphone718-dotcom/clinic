@@ -1,19 +1,20 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, serverTimestamp, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, limit, doc, runTransaction, serverTimestamp, where, Timestamp, setDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
 import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { Invoice, Product, Client, SaleItem, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
-import { Search, FileText, Eye, X, Printer, Download, User, Calendar, ShoppingBag, Plus, Trash2, Minus, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Search, FileText, Eye, X, Printer, Download, User, Calendar, ShoppingBag, Plus, Trash2, Minus, AlertCircle, CheckCircle2, Paperclip, Wallet, Ban } from 'lucide-react';
 import { format } from 'date-fns';
 import { APP_NAME } from '../config/brand';
 import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { PrintableTicket } from './PrintableTicket';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
+import { calculatePurchaseTotals } from '../lib/purchaseAccounting';
 
 interface InvoicesProps {
   userProfile: UserProfile | null;
@@ -28,6 +29,72 @@ interface PurchaseInvoiceRecord {
   supplierId?: string;
   total?: number;
   totalMilli?: number;
+  paidMilli?: number;
+  debtMilli?: number;
+  status?: 'received' | 'cancelled';
+  note?: string;
+  attachment?: PurchaseAttachment;
+  items?: PurchaseLine[];
+}
+
+interface PurchaseAttachment {
+  url?: string;
+  dataUrl?: string;
+  fileName: string;
+}
+
+interface PurchaseLine {
+  itemId: string;
+  itemCollection: 'products' | 'parts';
+  nameSnapshot: string;
+  quantity: number;
+  unitCostMilli: number;
+}
+
+interface SupplierRecord {
+  id: string;
+  name: string;
+  phone?: string;
+  ownerId: string;
+}
+
+interface PurchaseCatalogItem {
+  id: string;
+  name: string;
+  collection: 'products' | 'parts';
+  stock: number;
+  inventoryType?: string;
+}
+
+async function compressPurchaseImage(file: File): Promise<PurchaseAttachment> {
+  if (!file.type.startsWith('image/')) throw new Error('Choisissez un fichier image valide.');
+  const image = await createImageBitmap(file);
+  let scale = Math.min(1, 1600 / Math.max(image.width, image.height));
+  let quality = 0.78;
+  let blob: Blob | null = null;
+  const canvas = document.createElement('canvas');
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Impossible de compresser cette image sur cet appareil.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (blob && blob.size < 350 * 1024) break;
+    quality = Math.max(0.35, quality - 0.08);
+    scale *= 0.82;
+  }
+  image.close();
+  if (!blob || blob.size >= 350 * 1024) throw new Error('Image trop volumineuse après compression (limite 500 Ko dans Firestore).');
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Lecture de l’image impossible.'));
+    reader.onerror = () => reject(new Error('Lecture de l’image impossible.'));
+    reader.readAsDataURL(blob);
+  });
+  if (dataUrl.length >= 500 * 1024) throw new Error('Image trop volumineuse pour être enregistrée dans Firestore.');
+  return { dataUrl, fileName: file.name };
 }
 
 function toInvoiceDate(value: unknown): Date | null {
@@ -43,6 +110,8 @@ export default function Invoices({ userProfile }: InvoicesProps) {
   const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState<PurchaseInvoiceRecord[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierRecord[]>([]);
+  const [purchaseCatalog, setPurchaseCatalog] = useState<PurchaseCatalogItem[]>([]);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -52,6 +121,23 @@ export default function Invoices({ userProfile }: InvoicesProps) {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [isNewInvoiceModalOpen, setIsNewInvoiceModalOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
+  const [purchaseNumber, setPurchaseNumber] = useState(`ACH-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`);
+  const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().slice(0, 10));
+  const [purchaseSupplierId, setPurchaseSupplierId] = useState('');
+  const [quickSupplierName, setQuickSupplierName] = useState('');
+  const [purchaseItemId, setPurchaseItemId] = useState('');
+  const [purchaseItemQuantity, setPurchaseItemQuantity] = useState('1');
+  const [purchaseItemCost, setPurchaseItemCost] = useState('');
+  const [purchaseLines, setPurchaseLines] = useState<PurchaseLine[]>([]);
+  const [purchasePaidAmount, setPurchasePaidAmount] = useState('0');
+  const [purchaseNote, setPurchaseNote] = useState('');
+  const [purchaseAttachment, setPurchaseAttachment] = useState<PurchaseAttachment | null>(null);
+  const [purchaseAttachmentUrl, setPurchaseAttachmentUrl] = useState('');
+  const [purchaseError, setPurchaseError] = useState('');
+  const [purchaseSuccess, setPurchaseSuccess] = useState('');
+  const [purchaseSaving, setPurchaseSaving] = useState(false);
+  const [purchaseFileLoading, setPurchaseFileLoading] = useState(false);
 
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
   const isStoreAdmin = userProfile?.role === 'admin' && (userProfile.ownerId || userProfile.uid) === userProfile.uid;
@@ -131,6 +217,18 @@ export default function Invoices({ userProfile }: InvoicesProps) {
   }, [ownerId, isStoreAdmin]);
 
   useEffect(() => {
+    if (!isStoreAdmin || !ownerId || !auth.currentUser) {
+      setSuppliers([]);
+      return;
+    }
+    return onSnapshot(query(collection(db, 'suppliers'), where('ownerId', '==', ownerId)), snapshot => {
+      const records = snapshot.docs.map(item => ({ id: item.id, ...item.data() } as SupplierRecord));
+      records.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+      setSuppliers(records);
+    }, error => handleFirestoreError(error, OperationType.LIST, 'suppliers'));
+  }, [ownerId, isStoreAdmin]);
+
+  useEffect(() => {
     if (isNewInvoiceModalOpen) {
       const unsubClients = onSnapshot(query(collection(db, 'clients'), where('ownerId', '==', ownerId)), (snap) => {
         const cls = snap.docs.map(d => ({ id: d.id, ...d.data() } as Client));
@@ -156,6 +254,32 @@ export default function Invoices({ userProfile }: InvoicesProps) {
       };
     }
   }, [isNewInvoiceModalOpen, ownerId]);
+
+  useEffect(() => {
+    if (!isPurchaseModalOpen || !isStoreAdmin || !ownerId) return;
+    const unsubscribeProducts = onSnapshot(
+      query(collection(db, 'products'), where('ownerId', '==', ownerId)),
+      snapshot => setPurchaseCatalog(current => [
+        ...current.filter(item => item.collection !== 'products'),
+        ...snapshot.docs
+          .filter(item => item.data().inventoryType !== 'service')
+          .map(item => ({ id: item.id, name: String(item.data().name || 'Article'), collection: 'products' as const, stock: Number(item.data().stock) || 0 })),
+      ]),
+      error => handleFirestoreError(error, OperationType.LIST, 'products'),
+    );
+    const unsubscribeParts = onSnapshot(
+      query(collection(db, 'parts'), where('ownerId', '==', ownerId)),
+      snapshot => setPurchaseCatalog(current => [
+        ...current.filter(item => item.collection !== 'parts'),
+        ...snapshot.docs.map(item => ({ id: item.id, name: String(item.data().name || 'Pièce'), collection: 'parts' as const, stock: Number(item.data().stock) || 0 })),
+      ]),
+      error => handleFirestoreError(error, OperationType.LIST, 'parts'),
+    );
+    return () => {
+      unsubscribeProducts();
+      unsubscribeParts();
+    };
+  }, [isPurchaseModalOpen, isStoreAdmin, ownerId]);
 
   const addToCart = (product: Product) => {
     setCart(prev => {
@@ -205,6 +329,34 @@ export default function Invoices({ userProfile }: InvoicesProps) {
   }, [selectedClient, cartTotal]);
 
   const remainingDebt = Math.round(Math.max(0, cartTotal - paidAmount) * 1000) / 1000;
+  const purchaseTotalMilli = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitCostMilli, 0);
+  const purchasePaidMilli = Math.round((Number(purchasePaidAmount.replace(',', '.')) || 0) * 1000);
+  const purchaseDebtMilli = purchaseTotalMilli - purchasePaidMilli;
+
+  const addPurchaseLine = () => {
+    const item = purchaseCatalog.find(candidate => `${candidate.collection}:${candidate.id}` === purchaseItemId);
+    const quantity = Number(purchaseItemQuantity);
+    const unitCost = Number(purchaseItemCost.replace(',', '.'));
+    if (!item || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0) {
+      setPurchaseError('Sélectionnez un article, une quantité entière positive et un coût unitaire valide.');
+      return;
+    }
+    if (purchaseLines.some(line => line.itemId === item.id && line.itemCollection === item.collection)) {
+      setPurchaseError('Cet article est déjà dans la facture.');
+      return;
+    }
+    setPurchaseLines(current => [...current, {
+      itemId: item.id,
+      itemCollection: item.collection,
+      nameSnapshot: item.name,
+      quantity,
+      unitCostMilli: Math.round(unitCost * 1000),
+    }]);
+    setPurchaseItemId('');
+    setPurchaseItemQuantity('1');
+    setPurchaseItemCost('');
+    setPurchaseError('');
+  };
 
   const filteredProducts = useMemo(() => 
     products.filter(p => 
@@ -383,6 +535,214 @@ export default function Invoices({ userProfile }: InvoicesProps) {
     }
   };
 
+  const createQuickSupplier = async () => {
+    const name = quickSupplierName.trim();
+    if (!isStoreAdmin || !ownerId || !name) {
+      setPurchaseError('Saisissez le nom du fournisseur.');
+      return;
+    }
+    try {
+      const supplierRef = doc(collection(db, 'suppliers'));
+      await setDoc(supplierRef, {
+        ownerId,
+        name,
+        createdAt: serverTimestamp(),
+        createdBy: userProfile?.uid,
+      });
+      setPurchaseSupplierId(supplierRef.id);
+      setQuickSupplierName('');
+      setPurchaseError('');
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Impossible d’ajouter le fournisseur.');
+    }
+  };
+
+  const handlePurchaseAttachment = async (file: File | undefined) => {
+    setPurchaseError('');
+    if (!file) return;
+    setPurchaseFileLoading(true);
+    try {
+      setPurchaseAttachment(await compressPurchaseImage(file));
+      setPurchaseAttachmentUrl('');
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Impossible de traiter la pièce jointe.');
+    } finally {
+      setPurchaseFileLoading(false);
+    }
+  };
+
+  const submitPurchase = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPurchaseError('');
+    setPurchaseSuccess('');
+    if (!isStoreAdmin || !ownerId || !userProfile || !auth.currentUser) {
+      setPurchaseError('Seul l’administrateur du magasin peut créer une facture d’achat.');
+      return;
+    }
+    if (!purchaseSupplierId || !purchaseLines.length) {
+      setPurchaseError('Choisissez un fournisseur et ajoutez au moins une ligne.');
+      return;
+    }
+    const normalizedNumber = purchaseNumber.trim().toLocaleUpperCase('fr');
+    if (!/^[A-Z0-9][A-Z0-9._-]{0,59}$/.test(normalizedNumber)) {
+      setPurchaseError('Le numéro doit contenir uniquement des lettres, chiffres, points, tirets ou soulignés.');
+      return;
+    }
+    const paidAmount = Number(purchasePaidAmount.replace(',', '.'));
+    let totals;
+    try {
+      totals = calculatePurchaseTotals(purchaseLines, paidAmount);
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Vérifiez les lignes et le montant payé.');
+      return;
+    }
+    let attachment: PurchaseAttachment | undefined;
+    if (purchaseAttachmentUrl.trim()) {
+      if (!/^https:\/\/\S+$/i.test(purchaseAttachmentUrl.trim())) {
+        setPurchaseError('Le lien de la pièce jointe doit commencer par https://.');
+        return;
+      }
+      attachment = { url: purchaseAttachmentUrl.trim(), fileName: 'Lien fournisseur' };
+    } else if (purchaseAttachment) {
+      attachment = purchaseAttachment;
+    }
+
+    setPurchaseSaving(true);
+    try {
+      const purchaseRef = doc(db, 'purchases', `purchase_${normalizedNumber}`);
+      const supplierRef = doc(db, 'suppliers', purchaseSupplierId);
+      const debtRef = doc(db, 'supplier_debts', purchaseSupplierId);
+      const paymentRef = doc(collection(db, 'supplier_debts', purchaseSupplierId, 'payments'));
+      const itemRefs = purchaseLines.map(line => doc(db, line.itemCollection, line.itemId));
+      await runTransaction(db, async transaction => {
+        const [purchaseSnapshot, supplierSnapshot, debtSnapshot] = await Promise.all([
+          transaction.get(purchaseRef),
+          transaction.get(supplierRef),
+          transaction.get(debtRef),
+        ]);
+        if (purchaseSnapshot.exists()) throw new Error('Ce numéro de facture existe déjà.');
+        if (!supplierSnapshot.exists() || supplierSnapshot.data().ownerId !== ownerId) {
+          throw new Error('Le fournisseur sélectionné est introuvable dans ce magasin.');
+        }
+        const itemSnapshots = await Promise.all(itemRefs.map(ref => transaction.get(ref)));
+        const activeSession = totals.paidMilli > 0
+          ? await requireOpenCashSession(transaction, userProfile.uid, ownerId)
+          : null;
+        const stockUpdates = itemSnapshots.map((snapshot, index) => {
+          const line = purchaseLines[index];
+          if (!snapshot.exists() || snapshot.data().ownerId !== ownerId) {
+            throw new Error(`L’article « ${line.nameSnapshot} » n’existe plus dans ce magasin.`);
+          }
+          if (snapshot.data().inventoryType === 'service') {
+            throw new Error('Les services ne peuvent pas être reçus en stock.');
+          }
+          const version = (Number(snapshot.data().stockVersion) || 0) + 1;
+          return {
+            ref: itemRefs[index],
+            line,
+            stock: (Number(snapshot.data().stock) || 0) + line.quantity,
+            version,
+            movementId: `${line.itemCollection === 'parts' ? 'part' : 'product'}_${line.itemId}_v${version}`,
+          };
+        });
+        const supplierName = String(supplierSnapshot.data().name || 'Fournisseur');
+        const currentDebtMilli = Number(debtSnapshot.data()?.balanceMilli) || 0;
+        const debtMilli = currentDebtMilli + totals.debtMilli;
+        if (!Number.isSafeInteger(debtMilli)) throw new Error('Le solde fournisseur dépasse la limite autorisée.');
+        const purchaseDateValue = Timestamp.fromDate(new Date(`${purchaseDate}T12:00:00`));
+
+        transaction.set(purchaseRef, {
+          ownerId,
+          number: normalizedNumber,
+          date: purchaseDateValue,
+          supplierId: purchaseSupplierId,
+          supplierName,
+          items: purchaseLines,
+          totalMilli: totals.totalMilli,
+          paidMilli: totals.paidMilli,
+          debtMilli: totals.debtMilli,
+          note: purchaseNote.trim(),
+          ...(attachment ? { attachment } : {}),
+          status: 'received',
+          createdAt: serverTimestamp(),
+          createdBy: userProfile.uid,
+          ...(activeSession ? { sessionId: activeSession.id } : {}),
+        });
+        transaction.set(debtRef, {
+          ownerId,
+          supplierId: purchaseSupplierId,
+          supplierName,
+          balanceMilli: debtMilli,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+
+        stockUpdates.forEach(({ ref, line, stock, version, movementId }, index) => {
+          transaction.update(ref, {
+            stock,
+            stockVersion: version,
+            lastStockMovementId: movementId,
+            ownerId,
+            userId: userProfile.uid,
+          });
+          transaction.set(doc(db, 'stock_movements', movementId), {
+            type: 'purchase_restock',
+            inventoryCollection: line.itemCollection,
+            productId: line.itemId,
+            productName: line.nameSnapshot,
+            purchaseId: purchaseRef.id,
+            purchaseNumber: normalizedNumber,
+            lineIndex: index,
+            delta: line.quantity,
+            quantity: line.quantity,
+            version,
+            ownerId,
+            userId: userProfile.uid,
+            userLabel: userProfile.name || userProfile.email || 'Administrateur',
+            createdAt: serverTimestamp(),
+          });
+          transaction.set(doc(db, line.itemCollection === 'parts' ? 'part_costs' : 'product_costs', line.itemId), {
+            ownerId,
+            buyPrice: line.unitCostMilli / 1000,
+            currentUnitCostMilli: line.unitCostMilli,
+            updatedAt: serverTimestamp(),
+            updatedBy: userProfile.uid,
+          }, { merge: true });
+        });
+
+        if (totals.paidMilli > 0 && activeSession) {
+          transaction.set(paymentRef, {
+            ownerId,
+            supplierId: purchaseSupplierId,
+            supplierName,
+            purchaseId: purchaseRef.id,
+            purchaseNumber: normalizedNumber,
+            amountMilli: totals.paidMilli,
+            type: 'purchase_initial_payment',
+            sessionId: activeSession.id,
+            createdAt: serverTimestamp(),
+            createdBy: userProfile.uid,
+          });
+          addCashSessionTotals(transaction, activeSession, {
+            expenses: totals.paidMilli / 1000,
+            expensesCash: totals.paidMilli / 1000,
+          });
+        }
+      });
+      setPurchaseSuccess(`Facture ${normalizedNumber} enregistrée ; le stock et le coût d’achat ont été mis à jour.`);
+      setPurchaseLines([]);
+      setPurchasePaidAmount('0');
+      setPurchaseNote('');
+      setPurchaseAttachment(null);
+      setPurchaseAttachmentUrl('');
+      setPurchaseNumber(`ACH-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`);
+      setIsPurchaseModalOpen(false);
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Impossible d’enregistrer la facture d’achat.');
+    } finally {
+      setPurchaseSaving(false);
+    }
+  };
+
   const downloadPDF = async (invoice: Invoice) => {
     try {
       const currentUser = auth.currentUser;
@@ -464,7 +824,21 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
           Nouvelle Facture
         </button>}
+        {activeTab === 'purchases' && isStoreAdmin && <button
+          onClick={() => {
+            setPurchaseError('');
+            setPurchaseSuccess('');
+            setPurchaseLines([]);
+            setPurchasePaidAmount('0');
+            setPurchaseNumber(`ACH-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`);
+            setIsPurchaseModalOpen(true);
+          }}
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/15 transition-all hover:bg-emerald-700"
+        >
+          <Plus className="h-4 w-4" /> Nouvelle facture d'achat
+        </button>}
       </div>
+      {purchaseSuccess && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{purchaseSuccess}</p>}
 
       <div className="bg-white rounded-3xl border border-slate-100 shadow-xs overflow-hidden premium-shadow">
         <div className="flex flex-col gap-4 border-b border-slate-100 bg-slate-50/20 p-5">
@@ -564,20 +938,25 @@ export default function Invoices({ userProfile }: InvoicesProps) {
                   <th className="px-6 py-4">Date</th>
                   <th className="px-6 py-4">Fournisseur</th>
                   <th className="px-6 py-4 text-right">Total</th>
+                  <th className="px-6 py-4 text-right">Reste dû</th>
+                  <th className="px-6 py-4">Statut</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100/70">
-                {loading ? <tr><td colSpan={4} className="px-6 py-10 text-center text-gray-500">Chargement…</td></tr> :
-                  filteredPurchases.length === 0 ? <tr><td colSpan={4} className="px-6 py-10 text-center text-gray-500">Aucune facture d’achat enregistrée.</td></tr> :
+                {loading ? <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">Chargement…</td></tr> :
+                  filteredPurchases.length === 0 ? <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">Aucune facture d’achat enregistrée.</td></tr> :
                   filteredPurchases.map(purchase => {
                     const purchaseDate = toInvoiceDate(purchase.date);
                     const total = typeof purchase.total === 'number' ? purchase.total : (Number(purchase.totalMilli) || 0) / 1000;
+                    const debt = (Number(purchase.debtMilli) || 0) / 1000;
                     return (
                       <tr key={purchase.id} className="hover:bg-slate-50/60">
                         <td className="px-6 py-4 font-bold text-gray-900">{purchase.invoiceNumber || purchase.number || `Achat-${purchase.id.slice(0, 8)}`}</td>
                         <td className="px-6 py-4 text-sm text-gray-600">{purchaseDate ? format(purchaseDate, 'dd MMM yyyy', { locale: fr }) : 'Inconnue'}</td>
                         <td className="px-6 py-4">{purchase.supplierName || purchase.supplierId || 'Fournisseur non renseigné'}</td>
                         <td className="px-6 py-4 text-right font-black font-mono">{total.toFixed(3)} {storeSettings?.currency || 'DT'}</td>
+                        <td className="px-6 py-4 text-right font-black font-mono text-rose-700">{debt.toFixed(3)} {storeSettings?.currency || 'DT'}</td>
+                        <td className="px-6 py-4">{purchase.status === 'cancelled' ? 'Annulée' : 'Reçue'}</td>
                       </tr>
                     );
                   })}
@@ -586,6 +965,110 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           </div>
         )}
       </div>
+
+      {isPurchaseModalOpen && isStoreAdmin && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-2 sm:p-4">
+          <form onSubmit={submitPurchase} className="flex max-h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <header className="flex items-start justify-between gap-4 border-b border-slate-100 p-5 sm:p-6">
+              <div>
+                <h2 className="text-xl font-black text-slate-900">Nouvelle facture d'achat</h2>
+                <p className="mt-1 text-xs text-slate-500">La réception met à jour le stock et le coût réservé à l’administrateur.</p>
+              </div>
+              <button type="button" onClick={() => setIsPurchaseModalOpen(false)} disabled={purchaseSaving} aria-label="Fermer" className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
+            </header>
+
+            <div className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-6">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1.5 text-xs font-bold text-slate-600">
+                  Fournisseur
+                  <select value={purchaseSupplierId} onChange={event => setPurchaseSupplierId(event.target.value)} required className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">
+                    <option value="">Sélectionner un fournisseur</option>
+                    {suppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+                  </select>
+                </label>
+                <div className="flex items-end gap-2">
+                  <label className="min-w-0 flex-1 space-y-1.5 text-xs font-bold text-slate-600">
+                    Création rapide du fournisseur
+                    <input value={quickSupplierName} onChange={event => setQuickSupplierName(event.target.value)} maxLength={120} className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" placeholder="Nom du fournisseur" />
+                  </label>
+                  <button type="button" onClick={createQuickSupplier} disabled={!quickSupplierName.trim()} className="min-h-11 shrink-0 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-xs font-bold text-indigo-700 hover:bg-indigo-100">Ajouter</button>
+                </div>
+                <label className="space-y-1.5 text-xs font-bold text-slate-600">
+                  Numéro de facture
+                  <input value={purchaseNumber} onChange={event => setPurchaseNumber(event.target.value)} required maxLength={60} pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,59}" className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" />
+                </label>
+                <label className="space-y-1.5 text-xs font-bold text-slate-600">
+                  Date
+                  <input type="date" value={purchaseDate} onChange={event => setPurchaseDate(event.target.value)} required className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" />
+                </label>
+              </div>
+
+              <section className="space-y-3 rounded-2xl border border-slate-200 p-4">
+                <h3 className="text-sm font-black text-slate-800">Lignes de facture</h3>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_100px_150px_auto]">
+                  <select value={purchaseItemId} onChange={event => setPurchaseItemId(event.target.value)} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm">
+                    <option value="">Choisir un article ou une pièce</option>
+                    {purchaseCatalog.map(item => <option key={`${item.collection}:${item.id}`} value={`${item.collection}:${item.id}`}>{item.collection === 'parts' ? 'Pièce' : 'Article'} — {item.name} (stock {item.stock})</option>)}
+                  </select>
+                  <input aria-label="Quantité reçue" type="number" min="1" step="1" value={purchaseItemQuantity} onChange={event => setPurchaseItemQuantity(event.target.value)} className="min-h-11 rounded-xl border border-slate-200 px-3 text-sm" />
+                  <input aria-label="Prix d'achat unitaire en DT" type="number" min="0" step="0.001" value={purchaseItemCost} onChange={event => setPurchaseItemCost(event.target.value)} placeholder="Coût unitaire (DT)" className="min-h-11 rounded-xl border border-slate-200 px-3 text-sm" />
+                  <button type="button" onClick={addPurchaseLine} className="inline-flex min-h-11 items-center justify-center gap-1 rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700"><Plus className="h-4 w-4" /> Ajouter</button>
+                </div>
+                {purchaseLines.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[560px] text-left text-sm">
+                      <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2">Article</th><th>Qté</th><th>Coût unitaire</th><th className="text-right">Total</th><th /></tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {purchaseLines.map((line, index) => (
+                          <tr key={`${line.itemCollection}:${line.itemId}`}>
+                            <td className="py-2 font-semibold">{line.nameSnapshot} <span className="text-[10px] text-slate-400">{line.itemCollection === 'parts' ? 'Pièce' : 'Article'}</span></td>
+                            <td>{line.quantity}</td>
+                            <td className="font-mono">{(line.unitCostMilli / 1000).toFixed(3)} DT</td>
+                            <td className="text-right font-mono font-bold">{(line.quantity * line.unitCostMilli / 1000).toFixed(3)} DT</td>
+                            <td className="text-right"><button type="button" onClick={() => setPurchaseLines(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Retirer ${line.nameSnapshot}`} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50"><Trash2 className="h-4 w-4" /></button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : <p className="text-xs text-slate-500">Ajoutez au moins un article ou une pièce détachée.</p>}
+              </section>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1.5 text-xs font-bold text-slate-600">
+                  Montant payé (DT)
+                  <input type="number" min="0" step="0.001" max={purchaseTotalMilli / 1000} value={purchasePaidAmount} onChange={event => setPurchasePaidAmount(event.target.value)} className="min-h-11 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm" />
+                  {Number(purchasePaidAmount.replace(',', '.')) > 0 && !cashSession && <span className="block font-medium text-amber-700">{cashSessionLoading ? 'Vérification de la caisse…' : 'Un paiement nécessite une session de caisse ouverte.'}</span>}
+                </label>
+                <div className="rounded-xl bg-slate-50 p-3 text-sm">
+                  <div className="flex justify-between"><span>Total calculé</span><strong className="font-mono">{(purchaseTotalMilli / 1000).toFixed(3)} DT</strong></div>
+                  <div className="mt-2 flex justify-between text-rose-700"><span>Reste à payer</span><strong className="font-mono">{(purchaseDebtMilli / 1000).toFixed(3)} DT</strong></div>
+                </div>
+                <label className="space-y-1.5 text-xs font-bold text-slate-600 sm:col-span-2">
+                  Note
+                  <textarea value={purchaseNote} onChange={event => setPurchaseNote(event.target.value)} maxLength={1000} rows={2} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                </label>
+                <div className="space-y-2 sm:col-span-2">
+                  <label className="block space-y-1.5 text-xs font-bold text-slate-600">
+                    <span className="flex items-center gap-1"><Paperclip className="h-3.5 w-3.5" /> Pièce jointe optionnelle (lien HTTPS ou image compressée)</span>
+                    <input type="url" value={purchaseAttachmentUrl} onChange={event => { setPurchaseAttachmentUrl(event.target.value); setPurchaseAttachment(null); }} placeholder="https://…" className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" />
+                  </label>
+                  <input type="file" accept="image/*" disabled={purchaseFileLoading} onChange={event => void handlePurchaseAttachment(event.target.files?.[0])} className="block w-full text-xs text-slate-600 file:mr-3 file:min-h-10 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:font-bold" />
+                  {purchaseAttachment && <p className="text-xs font-semibold text-emerald-700">Image compressée jointe : {purchaseAttachment.fileName}</p>}
+                  {purchaseFileLoading && <p className="text-xs text-slate-500">Compression de l’image…</p>}
+                </div>
+              </div>
+              {purchaseError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700">{purchaseError}</p>}
+            </div>
+            <footer className="flex flex-col-reverse justify-end gap-2 border-t border-slate-100 p-4 sm:flex-row sm:p-5">
+              <button type="button" onClick={() => setIsPurchaseModalOpen(false)} disabled={purchaseSaving} className="min-h-11 rounded-xl border border-slate-200 px-5 text-sm font-bold text-slate-700 hover:bg-slate-50">Fermer</button>
+              <button type="submit" disabled={purchaseSaving || purchaseFileLoading || (purchasePaidMilli > 0 && !cashSession)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                <Wallet className="h-4 w-4" /> {purchaseSaving ? 'Enregistrement…' : 'Enregistrer et recevoir le stock'}
+              </button>
+            </footer>
+          </form>
+        </div>
+      )}
 
       {/* New Invoice Modal */}
       {isNewInvoiceModalOpen && (
