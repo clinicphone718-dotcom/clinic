@@ -997,7 +997,7 @@ export default function App() {
  
             <div className="mx-auto w-full max-w-[1600px] flex-1 p-4 lg:px-10 lg:py-7">
               <Routes>
-                <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
+                <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} cashSession={activeCashSession} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/clients" element={hasMenuAccess(userProfile, 'clients') ? <Clients userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/pos" element={hasMenuAccess(userProfile, 'pos') ? <POS userProfile={userProfile} /> : <Navigate to="/" replace />} />

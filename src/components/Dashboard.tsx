@@ -34,11 +34,14 @@ import {
   Sparkles
 } from 'lucide-react';
 import { isSameDay } from 'date-fns';
+import { Link } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import SalesVolumeChart from './SalesVolumeChart';
-import { can } from '../lib/permissions';
+import { can, hasMenuAccess } from '../lib/permissions';
 import { computeSaleProfit, computeTotals, normalizeFinancialSettings, type SaleCostLine } from '../lib/financial';
-import { computeWorkshopSummary } from '../lib/workshopReports';
+import { computeWorkshopSummary, isWithinReportPeriod } from '../lib/workshopReports';
+import { computeExpectedCash } from '../lib/cashSessionMath';
+import type { CashSession } from '../types';
 
 // Helper component for printing high-quality A4 reports
 interface PrintableReportProps {
@@ -212,9 +215,10 @@ function PrintableReport({ activeModal, records, storeSettings, currency, canVie
 
 interface DashboardProps {
   userProfile: UserProfile | null;
+  cashSession: CashSession | null;
 }
 
-export default function Dashboard({ userProfile }: DashboardProps) {
+export default function Dashboard({ userProfile, cashSession }: DashboardProps) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [saleCostSnapshots, setSaleCostSnapshots] = useState<Record<string, SaleCostLine[]>>({});
@@ -254,6 +258,9 @@ export default function Dashboard({ userProfile }: DashboardProps) {
   const canViewBuyPrice = can(userProfile, 'products', 'viewBuyPrice');
   const canViewCosts = can(userProfile, 'reparation', 'viewCosts');
   const canViewMargin = canViewBuyPrice && canViewCosts;
+  const canShowBuyPrice = isAdmin && canViewBuyPrice;
+  const canShowMargin = isAdmin && canViewMargin;
+  const canAccessCashSession = hasMenuAccess(userProfile, 'pos') || hasMenuAccess(userProfile, 'invoices');
 
   useEffect(() => {
     if (!canViewMargin && activeModal === 'profit') setActiveModal(null);
@@ -503,6 +510,89 @@ export default function Dashboard({ userProfile }: DashboardProps) {
     financialPeriod,
     canViewMargin,
   ), [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, financialPeriod, canViewMargin]);
+
+  const todaySummary = useMemo(() => computeWorkshopSummary(
+    sales,
+    repairs,
+    expenses,
+    saleCostSnapshots,
+    repairCostSnapshots,
+    'today',
+    canShowMargin,
+  ), [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, canShowMargin]);
+
+  const sevenDaySummaries = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+
+    return Array.from({ length: 7 }, (_, index) => {
+      const start = new Date(today);
+      start.setDate(today.getDate() - (6 - index));
+      const end = new Date(start);
+      end.setHours(23, 59, 59, 999);
+
+      const daySales = sales.filter(sale => {
+        const saleDate = getSaleDate(sale);
+        return saleDate >= start && saleDate <= end;
+      });
+      const dayRepairs = repairs.filter(repair => {
+        const value = repair.deliveredAt || repair.date;
+        const repairDate = value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value || 0);
+        return repairDate >= start && repairDate <= end;
+      });
+      const dayExpenses = expenses.filter(expense => {
+        const value = expense.date;
+        const expenseDate = value?.toDate ? value.toDate() : value instanceof Date ? value : new Date(value || 0);
+        return expenseDate >= start && expenseDate <= end;
+      });
+
+      const summary = computeWorkshopSummary(
+        daySales,
+        dayRepairs,
+        dayExpenses,
+        saleCostSnapshots,
+        repairCostSnapshots,
+        'all',
+        canShowMargin,
+        end,
+      );
+      return {
+        date: start,
+        netProfit: summary.netProfit,
+      };
+    });
+  }, [sales, repairs, expenses, saleCostSnapshots, repairCostSnapshots, canShowMargin]);
+
+  const periodSales = useMemo(
+    () => sales.filter(sale => isWithinReportPeriod(sale.date, financialPeriod)),
+    [sales, financialPeriod],
+  );
+  const periodSalesSummary = useMemo(() => computeWorkshopSummary(
+    sales,
+    [],
+    [],
+    saleCostSnapshots,
+    {},
+    financialPeriod,
+    false,
+  ), [sales, saleCostSnapshots, financialPeriod]);
+  const periodSalesCollected = periodSalesSummary.collected;
+  const periodSalesCost = useMemo(() => {
+    if (!canShowMargin) return null;
+    const margins = periodSales.map(sale => computeSaleProfit(sale, saleCostSnapshots[sale.id]));
+    return margins.every(result => result.complete)
+      ? margins.reduce((sum, result) => sum + result.cost, 0)
+      : null;
+  }, [periodSales, saleCostSnapshots, canShowMargin]);
+  const activeRepairCount = isAdmin
+    ? repairs.filter(repair => !['livre', 'irreparable', 'annule'].includes(repair.status)).length
+    : null;
+  const repairsToDeliver = isAdmin ? repairs.filter(repair => repair.status === 'termine').length : null;
+  const clientsWithDebt = new Set(sales
+    .filter(sale => Number(sale.debt) > 0)
+    .map(sale => sale.clientId || sale.clientName)
+    .filter(Boolean)).size;
 
   // Group ALL sales chronologically by day to build historical statistics dynamically
   const dailyRecords = useMemo(() => {
@@ -1029,12 +1119,12 @@ export default function Dashboard({ userProfile }: DashboardProps) {
   };
 
   const financialCards = [
-    { label: 'Réparations', value: financialSummary.repairCount, unit: 'réparations', style: 'from-blue-600 to-indigo-700', icon: Wrench, count: true },
-    { label: 'Encaissé', value: financialSummary.collected, unit: currency, style: 'from-emerald-500 to-teal-700', icon: Wallet, count: false },
-    ...(canViewMargin ? [
-      { label: 'Bénéfice brut', value: financialSummary.grossProfit, unit: currency, style: 'from-violet-600 to-purple-800', icon: Coins, count: false },
+    { label: 'Ventes encaissées', value: periodSalesCollected, unit: currency, icon: Wallet, count: false },
+    ...(canShowMargin ? [
+      { label: "Coût d'achat", value: periodSalesCost, unit: currency, icon: Package, count: false },
     ] : []),
-    { label: 'Impayés', value: financialSummary.debt, unit: currency, style: 'from-rose-500 to-red-700', icon: AlertCircle, count: false },
+    { label: 'Impayés', value: financialSummary.debt, unit: currency, icon: AlertCircle, count: false },
+    { label: 'Réparations en cours', value: activeRepairCount, unit: 'réparations', icon: Wrench, count: true },
   ];
   const historicalTvaSalesCount = sales.filter(sale => Number(sale.tva) > 0).length;
 
@@ -1048,70 +1138,137 @@ export default function Dashboard({ userProfile }: DashboardProps) {
   return (
     <div className="space-y-8 pb-12">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#E2E2DF] pb-5">
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Tableau de Bord</h1>
-          <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mt-0.5">Performance financière et opérationnelle en temps réel</p>
+          <h1 className="font-display text-[34px] font-bold leading-tight tracking-tight text-[#0A0A0A] lg:text-[52px]">Tableau de Bord</h1>
+          <p className="mt-1 text-xs font-medium uppercase tracking-wider text-[#5C5C5C]">Performance financière et opérationnelle en temps réel</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {dashboardData.lowStockAlerts.length > 0 && stockAlertDismissed && (
             <button
               type="button"
               onClick={() => setStockAlertDismissed(false)}
-              className="flex items-center gap-1.5 text-xs font-black bg-rose-50 text-rose-700 px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-100 transition-colors animate-pulse cursor-pointer shadow-xs"
+              className="flex min-h-11 items-center gap-1.5 rounded-full border border-[#B3261E] bg-[#FBDDD5] px-4 py-2 text-xs font-black text-[#8A210A] transition-colors hover:bg-[#F6C9BE]"
               title="Cliquer pour afficher la notification d'alerte de stock"
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+              <AlertTriangle className="h-3.5 w-3.5 text-[#B3261E]" />
               <span>{dashboardData.lowStockAlerts.length} alerte{dashboardData.lowStockAlerts.length > 1 ? 's' : ''} de stock (Afficher)</span>
             </button>
           )}
-          <div className="flex items-center gap-2 text-xs font-semibold bg-indigo-50/50 text-indigo-700 px-3 py-1.5 rounded-xl border border-indigo-100 w-fit">
-            <Calendar className="w-4 h-4" />
+          <div className="flex min-h-11 items-center gap-2 rounded-full border border-[#E2E2DF] bg-white px-4 py-2 text-xs font-semibold text-[#5C5C5C]">
+            <Calendar className="h-4 w-4" />
             <span>Aujourd'hui, {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
           </div>
         </div>
       </div>
 
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-black uppercase tracking-wider text-slate-500">Synthèse financière</h2>
-          <select
-            value={financialPeriod}
-            onChange={event => setFinancialPeriod(event.target.value as typeof financialPeriod)}
-            className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
-            aria-label="Période de la synthèse financière"
-          >
-            <option value="today">Aujourd'hui</option>
-            <option value="7">7 jours</option>
-            <option value="30">30 jours</option>
-            <option value="90">90 jours</option>
-            <option value="year">Cette année</option>
-            <option value="all">Tout</option>
-          </select>
+      <section className="grid gap-4 overflow-hidden rounded-[28px] bg-[#0A0A0A] p-5 text-white sm:p-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(260px,0.7fr)] lg:items-end lg:p-10">
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#B8B8B8]">Bénéfice net, aujourd'hui</p>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="font-display text-[62px] font-bold leading-none tracking-[-0.06em] tabular-nums lg:text-[104px]">
+              {canShowMargin && todaySummary.netProfit !== null ? todaySummary.netProfit.toFixed(3) : '—'}
+            </span>
+            {canShowMargin && todaySummary.netProfit !== null && (
+              <span className="text-xl font-semibold text-[#B8B8B8]">{currency}</span>
+            )}
+          </div>
+          {canShowMargin && (
+            <div className="mt-6 flex flex-wrap gap-2">
+              <span className="rounded-full bg-[#1C1C1C] px-4 py-2 text-xs font-semibold text-white">
+                Bénéfice brut <span className="ml-1 font-display tabular-nums">{todaySummary.grossProfit === null ? '—' : `${todaySummary.grossProfit.toFixed(3)} ${currency}`}</span>
+              </span>
+              <span className="rounded-full bg-[#1C1C1C] px-4 py-2 text-xs font-semibold text-white">
+                Dépenses <span className="ml-1 font-display tabular-nums">{todaySummary.expenses.toFixed(3)} {currency}</span>
+              </span>
+            </div>
+          )}
+          {canShowMargin && todaySummary.netProfit === null && (
+            <p role="status" className="mt-4 max-w-xl text-xs leading-5 text-[#D0D0D0]">
+              Bénéfice masqué : des coûts historiques sont manquants. Aucun coût estimé n’est utilisé.
+            </p>
+          )}
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {financialCards.map(({ label, value, unit, style, icon: Icon, count }) => (
-            <article key={label} className={`flex min-h-28 items-center justify-between rounded-2xl bg-gradient-to-br ${style} p-4 text-white shadow-md sm:p-5`}>
+        <div className="min-w-0">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#B8B8B8]">Bénéfice net · 7 jours</p>
+            {canShowMargin && <span className="text-[10px] text-[#8A8A8A]">Derniers jours</span>}
+          </div>
+          <div className="flex h-24 items-end gap-2" role="img" aria-label="Graphique du bénéfice net sur les sept derniers jours">
+            {sevenDaySummaries.map(({ date, netProfit }) => {
+              const maxProfit = Math.max(1, ...sevenDaySummaries.map(day => Math.abs(day.netProfit || 0)));
+              const height = netProfit === null ? 8 : Math.max(8, Math.abs(netProfit) / maxProfit * 100);
+              return (
+                <div key={date.toISOString()} className="flex h-full flex-1 flex-col items-center justify-end gap-2">
+                  <div
+                    className={cn(
+                      'w-full rounded-t-md',
+                      !canShowMargin || netProfit === null ? 'bg-[#3A3A3A]' :
+                        netProfit < 0 ? 'bg-[#B3261E]' : 'bg-[#F4F4F2]',
+                    )}
+                    style={{ height: `${height}%` }}
+                    title={`${date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} : ${netProfit === null ? 'indisponible' : `${netProfit.toFixed(3)} ${currency}`}`}
+                  />
+                  <span className="text-[10px] font-semibold capitalize text-[#8A8A8A]">
+                    {date.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '')}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-black uppercase tracking-wider text-[#5C5C5C]">Synthèse financière</h2>
+          <div className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-[#E2E2DF] bg-white p-1" role="group" aria-label="Période de la synthèse financière">
+            {([
+              ['today', "Aujourd'hui"],
+              ['7', '7 jours'],
+              ['30', '30 jours'],
+              ['90', '90 jours'],
+              ['year', 'Cette année'],
+              ['all', 'Tout'],
+            ] as const).map(([period, label]) => (
+              <button
+                key={period}
+                type="button"
+                aria-pressed={financialPeriod === period}
+                onClick={() => setFinancialPeriod(period)}
+                className={cn(
+                  'min-h-11 shrink-0 rounded-full px-4 text-xs font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0A0A0A]',
+                  financialPeriod === period ? 'bg-[#0A0A0A] text-white' : 'text-[#5C5C5C] hover:bg-[#F4F4F2]',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className={cn('grid grid-cols-2 gap-3', canShowMargin ? 'xl:grid-cols-4' : 'lg:grid-cols-3')}>
+          {financialCards.map(({ label, value, unit, icon: Icon, count }) => (
+            <article key={label} className="flex min-h-32 min-w-0 items-center justify-between rounded-[22px] border border-[#E2E2DF] bg-white p-4 sm:p-5">
               <div className="min-w-0">
-                <p className="truncate text-[10px] font-black uppercase tracking-wider text-white/75">{label}</p>
-                <p className="mt-2 truncate font-mono text-2xl font-black tabular-nums">
+                <p className="text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">{label}</p>
+                <p className="mt-2 break-words font-display text-xl font-bold tabular-nums text-[#0A0A0A] sm:text-2xl">
                   {value === null ? '—' : count ? value : value.toFixed(3)}
-                  {value !== null && <span className="ml-1 text-sm font-bold">{unit}</span>}
+                  {value !== null && <span className="ml-1 text-xs font-semibold text-[#5C5C5C]">{unit}</span>}
                 </p>
               </div>
-              <Icon className="h-8 w-8 shrink-0 opacity-80" aria-hidden="true" />
+              <Icon className="h-6 w-6 shrink-0 text-[#5C5C5C]" aria-hidden="true" />
             </article>
           ))}
         </div>
-        {canViewMargin && (
-          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+        {canShowMargin && (
+          <div className="rounded-[18px] border border-[#E2E2DF] bg-white px-4 py-3 text-xs text-[#5C5C5C]">
             <strong>CA réparations :</strong> main-d’œuvre {financialSummary.laborRevenue.toFixed(3)} {currency}
             {' · '}pièces facturées {financialSummary.repairPartsRevenue.toFixed(3)} {currency}
             {' · '}coût des pièces {financialSummary.repairPartsCost.toFixed(3)} {currency}
             {' · '}{financialSummary.salesWithTva} vente(s) avec TVA sur la période
             {' · '}historique total : {historicalTvaSalesCount} vente(s) avec TVA
             {(financialSummary.incompleteSales > 0 || financialSummary.incompleteRepairs > 0) && (
-              <p role="status" className="mt-2 font-semibold text-amber-700">
+              <p role="status" className="mt-2 font-semibold text-[#8A210A]">
                 Bénéfice masqué : coûts historiques manquants pour {financialSummary.incompleteSales} vente(s)
                 {financialSummary.incompleteRepairs ? ' ou certaines réparations' : ''}. Aucun coût estimé n’est utilisé.
               </p>
@@ -1120,15 +1277,102 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         )}
       </section>
 
+      <section className="grid gap-4 lg:grid-cols-2">
+        <article className="rounded-[24px] border border-[#E2E2DF] bg-white p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-display text-lg font-bold text-[#0A0A0A]">Caisse en cours</h2>
+              <p className="mt-1 text-xs text-[#5C5C5C]">
+                {cashSession ? 'Session ouverte' : 'Aucune caisse ouverte'}
+              </p>
+            </div>
+            <Wallet className="h-5 w-5 text-[#5C5C5C]" aria-hidden="true" />
+          </div>
+          {cashSession ? (
+            <>
+              <div className="mt-5 space-y-3 text-sm">
+                <div className="flex justify-between gap-4">
+                  <span className="text-[#5C5C5C]">Fond de caisse</span>
+                  <span className="font-display font-semibold tabular-nums text-[#0A0A0A]">{Number(cashSession.openingFloat || 0).toFixed(3)} {currency}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-[#5C5C5C]">Espèces encaissées</span>
+                  <span className="font-display font-semibold tabular-nums text-[#0A0A0A]">
+                    {(
+                      Number(cashSession.totals?.cash || 0) +
+                      Number(cashSession.totals?.debtsCollectedCash ?? cashSession.totals?.debtsCollected ?? 0) +
+                      Number(cashSession.totals?.repairsCollectedCash ?? cashSession.totals?.repairsCollected ?? 0)
+                    ).toFixed(3)} {currency}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-[#5C5C5C]">Dépenses en espèces</span>
+                  <span className="font-display font-semibold tabular-nums text-[#0A0A0A]">−{Number(cashSession.totals?.expensesCash || 0).toFixed(3)} {currency}</span>
+                </div>
+                <div className="flex justify-between gap-4 border-t border-[#E2E2DF] pt-3">
+                  <span className="font-bold text-[#0A0A0A]">Attendu en caisse</span>
+                  <span className="font-display font-bold tabular-nums text-[#0A0A0A]">{computeExpectedCash(cashSession).toFixed(3)} {currency}</span>
+                </div>
+              </div>
+              {canAccessCashSession && (
+                <Link to="/cash-session" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full bg-[#0A0A0A] px-5 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0A0A0A]">
+                  Clôturer la caisse
+                </Link>
+              )}
+            </>
+          ) : (
+            canAccessCashSession && (
+              <Link to="/cash-session" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-full border border-[#E2E2DF] bg-white px-5 text-sm font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0A0A0A]">
+                Ouvrir la caisse
+              </Link>
+            )
+          )}
+        </article>
+
+        <article className="rounded-[24px] border border-[#E2E2DF] bg-white p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-display text-lg font-bold text-[#0A0A0A]">À traiter</h2>
+              <p className="mt-1 text-xs text-[#5C5C5C]">Éléments nécessitant votre attention</p>
+            </div>
+            <AlertTriangle className="h-5 w-5 text-[#5C5C5C]" aria-hidden="true" />
+          </div>
+          <div className="mt-5 space-y-2">
+            {hasMenuAccess(userProfile, 'pieces') && (
+              <Link to="/parts" className="flex min-h-11 items-center justify-between gap-4 rounded-xl px-3 text-sm transition-colors hover:bg-[#F4F4F2]">
+                <span className="text-[#0A0A0A]">Stock faible</span>
+                <span className={cn('rounded-full px-3 py-1 font-display text-xs font-bold tabular-nums', dashboardData.lowStockAlerts.length ? 'bg-[#FBDDD5] text-[#8A210A]' : 'bg-[#F4F4F2] text-[#5C5C5C]')}>
+                  {dashboardData.lowStockAlerts.length}
+                </span>
+              </Link>
+            )}
+            {hasMenuAccess(userProfile, 'reparation') && (
+              <Link to="/repairs" className="flex min-h-11 items-center justify-between gap-4 rounded-xl px-3 text-sm transition-colors hover:bg-[#F4F4F2]">
+                <span className="text-[#0A0A0A]">Réparations terminées</span>
+                <span className="rounded-full bg-[#F4F4F2] px-3 py-1 font-display text-xs font-bold tabular-nums text-[#5C5C5C]">{repairsToDeliver ?? '—'}</span>
+              </Link>
+            )}
+            {hasMenuAccess(userProfile, 'clients') && (
+              <Link to="/clients" className="flex min-h-11 items-center justify-between gap-4 rounded-xl px-3 text-sm transition-colors hover:bg-[#F4F4F2]">
+                <span className="text-[#0A0A0A]">Clients avec impayés</span>
+                <span className={cn('rounded-full px-3 py-1 font-display text-xs font-bold tabular-nums', clientsWithDebt ? 'bg-[#FBDDD5] text-[#8A210A]' : 'bg-[#F4F4F2] text-[#5C5C5C]')}>
+                  {clientsWithDebt}
+                </span>
+              </Link>
+            )}
+          </div>
+        </article>
+      </section>
+
       {/* SYSTÈME D'ALERTE VISUELLE : NOTIFICATION DE STOCK MINIMUM */}
       {dashboardData.lowStockAlerts.length > 0 && !stockAlertDismissed && (
-        <div className="relative overflow-hidden rounded-3xl border border-rose-200/90 bg-gradient-to-r from-rose-50 via-amber-50/30 to-rose-50 p-4 sm:p-5 shadow-sm transition-all">
+        <div className="relative overflow-hidden rounded-[24px] border border-[#F6C9BE] bg-[#FBDDD5] p-4 transition-all sm:p-5">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             
             {/* Left: Icon & Details */}
             <div className="flex items-start gap-3.5">
               <div className="relative flex items-center justify-center shrink-0 mt-0.5">
-                <div className="w-10 h-10 rounded-2xl bg-rose-600 text-white flex items-center justify-center shadow-md shadow-rose-600/30">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#B3261E] text-white">
                   <AlertTriangle className="w-5 h-5 animate-pulse" />
                 </div>
                 <span className="absolute -top-1 -right-1 flex h-3 w-3">
@@ -1142,16 +1386,16 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                   <h3 className="text-sm font-black text-rose-900 tracking-tight">
                     Alerte de Stock Faible ({dashboardData.lowStockAlerts.length} produit{dashboardData.lowStockAlerts.length > 1 ? 's' : ''})
                   </h3>
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-rose-200/80 text-rose-800 px-2 py-0.5 rounded-full">
+                  <span className="rounded-full bg-[#F6C9BE] px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-[#8A210A]">
                     Seuil minimum : {dashboardData.configuredMinStock} unités
                   </span>
                   {dashboardData.lowStockAlerts.filter(p => p.stock <= 0).length > 0 && (
-                    <span className="text-[10px] font-black uppercase tracking-wider bg-red-600 text-white px-2 py-0.5 rounded-full animate-pulse">
+                    <span className="rounded-full bg-[#B3261E] px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-white">
                       {dashboardData.lowStockAlerts.filter(p => p.stock <= 0).length} rupture{dashboardData.lowStockAlerts.filter(p => p.stock <= 0).length > 1 ? 's' : ''} immédiate{dashboardData.lowStockAlerts.filter(p => p.stock <= 0).length > 1 ? 's' : ''} !
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-rose-700/90 font-medium mt-1">
+                <p className="mt-1 text-xs font-medium text-[#8A210A]">
                   La quantité en stock de ces articles est inférieure ou égale au seuil minimum défini dans vos paramètres ({dashboardData.configuredMinStock} unités). Un réapprovisionnement est recommandé.
                 </p>
 
@@ -1163,15 +1407,15 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                       onClick={() => openHistoryModal('stock')}
                       className={cn(
                         "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-xs",
-                        prod.stock <= 0 
-                          ? "bg-red-100 text-red-900 border-red-300" 
-                          : "bg-white text-slate-800 border-rose-200"
+                        prod.stock <= 0
+                          ? "border-[#B3261E] bg-[#B3261E] text-white"
+                          : "border-[#F6C9BE] bg-white text-[#0A0A0A]"
                       )}
                     >
                       <span className="truncate max-w-[140px]">{prod.name}</span>
                       <span className={cn(
                         "px-1.5 py-0.2 rounded font-mono font-black text-[10px]",
-                        prod.stock <= 0 ? "bg-red-600 text-white" : "bg-rose-100 text-rose-800"
+                        prod.stock <= 0 ? "bg-white/20 text-white" : "bg-[#FBDDD5] text-[#8A210A]"
                       )}>
                         {prod.stock} restant{prod.stock > 1 ? 's' : ''}
                       </span>
@@ -1181,7 +1425,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                     <button
                       type="button"
                       onClick={() => openHistoryModal('stock')}
-                      className="text-[11px] font-bold text-rose-700 underline underline-offset-2 hover:text-rose-900 transition-colors ml-1 cursor-pointer"
+                      className="ml-1 cursor-pointer text-[11px] font-bold text-[#8A210A] underline underline-offset-2 transition-colors hover:text-[#B3261E]"
                     >
                       +{dashboardData.lowStockAlerts.length - 6} autres produits...
                     </button>
@@ -1195,7 +1439,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
               <button
                 type="button"
                 onClick={() => openHistoryModal('stock')}
-                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md shadow-rose-600/20 active:scale-95 cursor-pointer flex items-center gap-1.5"
+                className="flex min-h-11 cursor-pointer items-center gap-1.5 rounded-full bg-[#B3261E] px-4 py-2 text-xs font-black uppercase tracking-wider text-white transition-colors hover:bg-[#8A210A]"
               >
                 <Package className="w-3.5 h-3.5" />
                 <span>Gérer le Stock</span>
@@ -1204,7 +1448,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                 type="button"
                 onClick={() => setStockAlertDismissed(true)}
                 title="Masquer l'alerte temporairement"
-                className="p-2 text-rose-400 hover:text-rose-700 hover:bg-rose-100/60 rounded-xl transition-all cursor-pointer"
+                className="min-h-11 min-w-11 cursor-pointer rounded-full text-[#8A210A] transition-colors hover:bg-[#F6C9BE]"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1220,48 +1464,46 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         {/* CARD 1: Chiffre d'Affaires - BLEU */}
         <div 
           onClick={() => openHistoryModal('revenue')}
-          className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-850 text-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-xl shadow-blue-500/20 hover:scale-[1.03] active:scale-[0.98] cursor-pointer transition-all duration-300 flex flex-col justify-between min-h-[140px] sm:min-h-[170px] relative overflow-hidden group ring-offset-2 hover:ring-2 hover:ring-blue-500/55"
+          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
         >
-          <div className="absolute top-0 right-0 p-8 translate-x-4 -translate-y-4 bg-white/5 rounded-full blur-xl group-hover:scale-150 transition-transform duration-500"></div>
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-blue-100/85 truncate">CA Jour</span>
-            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-md group-hover:bg-white/20 transition-colors shrink-0">
-              <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-blue-100" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">CA Jour</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
+              <TrendingUp className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
+              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyRevenue.toFixed(3)}
               </span>
-              <span className="text-[10px] sm:text-xs font-black text-blue-150 shrink-0">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
             </div>
-            <p className="text-[8px] sm:text-[9px] font-bold text-blue-100/70 mt-1.5 sm:mt-2.5 flex items-center gap-1">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
           </div>
         </div>
 
-        {canViewMargin && <div 
+        {canShowMargin && <div
           onClick={() => openHistoryModal('profit')}
-          className="bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-800 text-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-xl shadow-emerald-500/20 hover:scale-[1.03] active:scale-[0.98] cursor-pointer transition-all duration-300 flex flex-col justify-between min-h-[140px] sm:min-h-[170px] relative overflow-hidden group ring-offset-2 hover:ring-2 hover:ring-emerald-500/55"
+          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
         >
-          <div className="absolute top-0 right-0 p-8 translate-x-4 -translate-y-4 bg-white/5 rounded-full blur-xl group-hover:scale-150 transition-transform duration-500"></div>
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-emerald-100/85 truncate">Bénéfice Net</span>
-            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-md group-hover:bg-white/20 transition-colors shrink-0">
-              <Coins className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-100" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Bénéfice Net</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
+              <Coins className="h-4 w-4 text-[#1B5E2B] sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
+              <span className={cn('truncate font-display text-xl font-bold leading-none tracking-tight tabular-nums sm:text-[28px] lg:text-[30px]', dashboardData.dailyProfit === null ? 'text-[#0A0A0A]' : dashboardData.dailyProfit < 0 ? 'text-[#8A210A]' : 'text-[#1B5E2B]')}>
                 {dashboardData.dailyProfit === null ? '—' : dashboardData.dailyProfit.toFixed(3)}
               </span>
-              <span className="text-[10px] sm:text-xs font-black text-emerald-150 shrink-0">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
             </div>
-            <p className="text-[8px] sm:text-[9px] font-bold text-emerald-100/70 mt-1.5 sm:mt-2.5 flex items-center gap-1">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1271,23 +1513,22 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         {/* CARD 3: Dépenses du Jour - ORANGE ANGLAIS */}
         <div 
           onClick={() => openHistoryModal('expenses')}
-          className="bg-gradient-to-br from-amber-500 via-amber-600 to-orange-700 text-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-xl shadow-amber-500/20 hover:scale-[1.03] active:scale-[0.98] cursor-pointer transition-all duration-300 flex flex-col justify-between min-h-[140px] sm:min-h-[170px] relative overflow-hidden group ring-offset-2 hover:ring-2 hover:ring-amber-500/55"
+          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
         >
-          <div className="absolute top-0 right-0 p-8 translate-x-4 -translate-y-4 bg-white/5 rounded-full blur-xl group-hover:scale-150 transition-transform duration-500"></div>
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-amber-100/85 truncate">Dépenses</span>
-            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-md group-hover:bg-white/20 transition-colors shrink-0">
-              <PackagePlus className="w-4 h-4 sm:w-5 sm:h-5 text-amber-100" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Dépenses</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
+              <PackagePlus className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
+              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyExpenses.toFixed(3)}
               </span>
-              <span className="text-[10px] sm:text-xs font-black text-amber-150 shrink-0">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
             </div>
-            <p className="text-[8px] sm:text-[9px] font-bold text-amber-100/70 mt-1.5 sm:mt-2.5 flex items-center gap-1">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1297,23 +1538,22 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         {/* CARD 4: Dettes - ROUGE */}
         <div 
           onClick={() => openHistoryModal('debt')}
-          className="bg-gradient-to-br from-rose-500 via-rose-600 to-red-700 text-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-xl shadow-rose-500/20 hover:scale-[1.03] active:scale-[0.98] cursor-pointer transition-all duration-300 flex flex-col justify-between min-h-[140px] sm:min-h-[170px] relative overflow-hidden group ring-offset-2 hover:ring-2 hover:ring-rose-500/55"
+          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#F6C9BE] bg-[#FBDDD5] p-3.5 transition-colors hover:bg-[#F6C9BE] sm:min-h-[170px] sm:p-6"
         >
-          <div className="absolute top-0 right-0 p-8 translate-x-4 -translate-y-4 bg-white/5 rounded-full blur-xl group-hover:scale-150 transition-transform duration-500"></div>
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-rose-100/85 truncate">Dettes</span>
-            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-md group-hover:bg-white/20 transition-colors shrink-0">
-              <AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 text-rose-100" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#8A210A] sm:text-[10px]">Dettes</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/70 sm:h-9 sm:w-9">
+              <AlertCircle className="h-4 w-4 text-[#B3261E] sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
+              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#8A210A] tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyDebt.toFixed(3)}
               </span>
-              <span className="text-[10px] sm:text-xs font-black text-rose-150 shrink-0">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-[#8A210A] sm:text-xs">{currency}</span>
             </div>
-            <p className="text-[8px] sm:text-[9px] font-bold text-rose-100/70 mt-1.5 sm:mt-2.5 flex items-center gap-1">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#8A210A] sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1323,23 +1563,22 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         {/* CARD 5: Nombre de ventes - VIOLET */}
         <div 
           onClick={() => openHistoryModal('sales')}
-          className="col-span-2 sm:col-span-1 bg-gradient-to-br from-purple-500 via-purple-600 to-violet-850 text-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-xl shadow-purple-500/20 hover:scale-[1.03] active:scale-[0.98] cursor-pointer transition-all duration-300 flex flex-col justify-between min-h-[140px] sm:min-h-[170px] relative overflow-hidden group ring-offset-2 hover:ring-2 hover:ring-purple-500/55"
+          className="col-span-2 flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:col-span-1 sm:min-h-[170px] sm:p-6"
         >
-          <div className="absolute top-0 right-0 p-8 translate-x-4 -translate-y-4 bg-white/5 rounded-full blur-xl group-hover:scale-150 transition-transform duration-500"></div>
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-purple-100/85 truncate">Ventes</span>
-            <div className="w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-md group-hover:bg-white/20 transition-colors shrink-0">
-              <ShoppingCart className="w-4 h-4 sm:w-5 sm:h-5 text-purple-100" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Ventes</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
+              <ShoppingCart className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="text-xl sm:text-[28px] lg:text-[30px] font-black font-mono tracking-tight leading-none truncate">
+              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.todaySalesCount}
               </span>
-              <span className="text-[10px] sm:text-xs font-black text-purple-150 shrink-0">ventes</span>
+              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">ventes</span>
             </div>
-            <p className="text-[8px] sm:text-[9px] font-bold text-purple-100/70 mt-1.5 sm:mt-2.5 flex items-center gap-1">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1348,18 +1587,18 @@ export default function Dashboard({ userProfile }: DashboardProps) {
       </div>
 
       {/* SECTION: VALORISATION & PERFORMANCE DU STOCK RESTANT */}
-      <div className="bg-white rounded-3xl border border-slate-150 shadow-xs p-6 font-sans">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-100">
+      <div className="rounded-[24px] border border-[#E2E2DF] bg-white p-5 sm:p-6">
+        <div className="mb-5 flex flex-col justify-between gap-4 border-b border-[#E2E2DF] pb-4 sm:flex-row sm:items-center">
           <div>
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
-              <h2 className="text-sm font-black uppercase text-slate-800 tracking-wider">Valorisation & Performance du Stock Restant</h2>
+              <span className="h-2.5 w-2.5 rounded-full bg-[#5C5C5C]"></span>
+              <h2 className="font-display text-sm font-bold uppercase tracking-wider text-[#0A0A0A]">Valorisation & Performance du Stock Restant</h2>
             </div>
-            <p className="text-[11px] text-slate-450 font-semibold uppercase mt-0.5">Calculé automatiquement en temps réel à chaque modification de prix ou de stock</p>
+            <p className="mt-0.5 text-[11px] font-semibold uppercase text-[#5C5C5C]">Calculé automatiquement en temps réel à chaque modification de prix ou de stock</p>
           </div>
           <button
             onClick={() => openHistoryModal('stock')}
-            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md shadow-indigo-600/10 active:scale-[0.98] cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
+            className="flex min-h-11 cursor-pointer items-center gap-1.5 self-start rounded-full bg-[#0A0A0A] px-5 text-xs font-black uppercase tracking-wider text-white transition-colors hover:bg-[#2A2A2A] sm:self-auto"
           >
             <BarChart3 className="w-4 h-4" />
             Consulter le Rapport d'Inventaire
@@ -1368,56 +1607,56 @@ export default function Dashboard({ userProfile }: DashboardProps) {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           
-          {canViewMargin && <div className="bg-slate-50/70 rounded-2xl p-4 border border-slate-100 flex items-center gap-4 hover:bg-slate-50 transition-colors">
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 shadow-xs">
+          {canShowMargin && <div className="flex items-center gap-4 rounded-2xl border border-[#E2E2DF] bg-[#F4F4F2] p-4 transition-colors hover:bg-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#1B5E2B]">
               <Coins className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <span className="text-[10px] font-black uppercase text-slate-450 tracking-wider block">Valeur d'Achat Totale</span>
-              <span className="text-base font-black text-slate-800 font-mono block mt-0.5">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">Valeur d'Achat Totale</span>
+              <span className="mt-0.5 block font-display text-base font-bold tabular-nums text-[#0A0A0A]">
                 {stockValuation.totalBuyValue.toFixed(3)} <span className="text-xs text-slate-500">{currency}</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-bold uppercase block mt-0.5">Investi dans les marchandises</span>
+              <span className="mt-0.5 block text-[10px] font-bold uppercase text-[#5C5C5C]">Investi dans les marchandises</span>
             </div>
           </div>}
 
           {/* Card: Revenus Potentiels Estimés (Valeur de vente) */}
-          <div className="bg-slate-50/70 rounded-2xl p-4 border border-slate-100 flex items-center gap-4 hover:bg-slate-50 transition-colors">
-            <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 shadow-xs">
+          <div className="flex items-center gap-4 rounded-2xl border border-[#E2E2DF] bg-[#F4F4F2] p-4 transition-colors hover:bg-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#0A0A0A]">
               <TrendingUp className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <span className="text-[10px] font-black uppercase text-slate-450 tracking-wider block">Revenus Potentiels Estimés</span>
-              <span className="text-base font-black text-slate-800 font-mono block mt-0.5">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">Revenus Potentiels Estimés</span>
+              <span className="mt-0.5 block font-display text-base font-bold tabular-nums text-[#0A0A0A]">
                 {stockValuation.totalSellValue.toFixed(3)} <span className="text-xs text-slate-500">{currency}</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-bold uppercase block mt-0.5">Chiffre d'affaires estimé</span>
+              <span className="mt-0.5 block text-[10px] font-bold uppercase text-[#5C5C5C]">Chiffre d'affaires estimé</span>
             </div>
           </div>
 
-          {canViewMargin && <div className="bg-slate-50/70 rounded-2xl p-4 border border-slate-100 flex items-center gap-4 hover:bg-slate-50 transition-colors">
-            <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0 shadow-xs">
+          {canShowMargin && <div className="flex items-center gap-4 rounded-2xl border border-[#E2E2DF] bg-[#F4F4F2] p-4 transition-colors hover:bg-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#1B5E2B]">
               <Sparkles className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <span className="text-[10px] font-black uppercase text-slate-450 tracking-wider block">Bénéfice Théorique (Marge)</span>
-              <span className="text-base font-black text-slate-800 font-mono block mt-0.5">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">Bénéfice Théorique (Marge)</span>
+              <span className="mt-0.5 block font-display text-base font-bold tabular-nums text-[#1B5E2B]">
                 {stockValuation.theoreticalMargin.toFixed(3)} <span className="text-xs text-slate-500">{currency}</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-bold uppercase block mt-0.5">Marge brute théorique</span>
+              <span className="mt-0.5 block text-[10px] font-bold uppercase text-[#5C5C5C]">Marge brute théorique</span>
             </div>
           </div>}
 
-          {canViewBuyPrice && <div className="bg-slate-50/70 rounded-2xl p-4 border border-slate-100 flex items-center gap-4 hover:bg-slate-50 transition-colors">
-            <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 shadow-xs">
+          {canShowBuyPrice && <div className="flex items-center gap-4 rounded-2xl border border-[#E2E2DF] bg-[#F4F4F2] p-4 transition-colors hover:bg-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#5C5C5C]">
               <Percent className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <span className="text-[10px] font-black uppercase text-slate-450 tracking-wider block">Marge Commerciale Moyenne</span>
-              <span className="text-base font-black text-indigo-700 font-mono block mt-0.5">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">Marge Commerciale Moyenne</span>
+              <span className="mt-0.5 block font-display text-base font-bold tabular-nums text-[#0A0A0A]">
                 {stockValuation.marginRatio.toFixed(1)}%
               </span>
-              <span className="text-[10px] text-slate-400 font-bold uppercase block mt-0.5">Taux de profitabilité du stock</span>
+              <span className="mt-0.5 block text-[10px] font-bold uppercase text-[#5C5C5C]">Taux de profitabilité du stock</span>
             </div>
           </div>}
 
@@ -1429,7 +1668,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         sales={sales} 
         saleCostSnapshots={saleCostSnapshots}
         currency={currency} 
-        showProfit={canViewMargin}
+        showProfit={canShowMargin}
       />
 
       {/* Main layout divided into 2 Columns (Table on left, stats sidebar on right) */}
@@ -1437,72 +1676,90 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         
         {/* LEFT COLUMN: Dernières Ventes (Top 10) */}
         <div className="xl:col-span-2 space-y-6">
-          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-slate-50 flex items-center justify-between bg-slate-50/40">
+          <div className="overflow-hidden rounded-[24px] border border-[#E2E2DF] bg-white">
+            <div className="flex items-center justify-between border-b border-[#E2E2DF] bg-[#F4F4F2] p-5 sm:p-6">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-xs">
-                  <ShoppingCart className="w-4.5 h-4.5" />
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#0A0A0A] text-white">
+                  <ShoppingCart className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="font-extrabold text-slate-800 text-sm uppercase tracking-wider">Les 10 Dernières Ventes</h2>
-                  <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">Transactions récentes enregistrées</p>
+                  <h2 className="font-display text-sm font-bold uppercase tracking-wider text-[#0A0A0A]">Dernières ventes</h2>
+                  <p className="mt-0.5 text-[10px] font-semibold uppercase text-[#5C5C5C]">Transactions récentes enregistrées</p>
                 </div>
               </div>
             </div>
 
             <div className="overflow-x-auto">
               {sales.slice(0, 10).length === 0 ? (
-                <div className="text-center py-16 px-4">
-                  <ShoppingCart className="w-12 h-12 text-slate-200 mx-auto mb-3" />
-                  <p className="text-slate-400 font-bold text-xs uppercase tracking-wider">Aucune vente récente dans le système</p>
+                <div className="px-4 py-16 text-center">
+                  <ShoppingCart className="mx-auto mb-3 h-12 w-12 text-[#B8B8B8]" />
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#5C5C5C]">Aucune vente récente dans le système</p>
                 </div>
               ) : (
-                <table className="w-full text-left border-collapse">
+                <table className="w-full border-collapse text-left">
                   <thead>
-                    <tr className="bg-slate-50/40 border-b border-slate-100 text-[10px] font-extrabold text-slate-450 uppercase tracking-wider">
-                      <th className="px-6 py-4">Date et Heure</th>
-                      <th className="px-6 py-4">Client</th>
-                      <th className="px-6 py-4 text-right">Total</th>
-                      <th className="px-6 py-4 text-right">Montant payé</th>
-                      <th className="px-6 py-4 text-right">Reste à payer</th>
-                      <th className="px-6 py-4 text-center">Statut</th>
+                    <tr className="border-b border-[#E2E2DF] bg-[#F4F4F2] text-[10px] font-extrabold uppercase tracking-wider text-[#5C5C5C]">
+                      <th className="px-4 py-4">Vente</th>
+                      {canShowMargin && <th className="px-4 py-4 text-right">Achat</th>}
+                      {canShowMargin && <th className="px-4 py-4 text-right">Bénéfice</th>}
+                      <th className="px-4 py-4 text-right">Total</th>
+                      <th className="px-4 py-4 text-right">Montant payé</th>
+                      <th className="px-4 py-4 text-right">Reste à payer</th>
+                      <th className="px-4 py-4 text-center">Statut</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-[#E2E2DF]">
                     {sales.slice(0, 10).map((sale) => {
                       const sDate = getSaleDate(sale);
                       const formattedDate = sDate.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
                       const formattedTime = sDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                      const margin = canShowMargin ? computeSaleProfit(sale, saleCostSnapshots[sale.id]) : null;
                       return (
-                        <tr key={sale.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 whitespace-nowrap">
+                        <tr key={sale.id} className="transition-colors hover:bg-[#F4F4F2]">
+                          <td className="whitespace-nowrap px-4 py-4">
                             <div className="flex flex-col">
-                              <span className="text-xs font-bold text-slate-700">{formattedDate}</span>
-                              <span className="text-[10px] text-slate-450 font-semibold font-mono mt-0.5">{formattedTime}</span>
+                              <span className="text-xs font-bold text-[#0A0A0A]">{sale.clientName || 'Client de passage'}</span>
+                              <span className="mt-0.5 font-mono text-[10px] font-semibold text-[#5C5C5C]">{formattedDate} · {formattedTime}</span>
                             </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-xs font-bold text-slate-800">{sale.clientName || 'Client de passage'}</div>
+                          {canShowMargin && (
+                            <>
+                              <td className="whitespace-nowrap px-4 py-4 text-right">
+                                <span className="font-mono text-xs font-semibold tabular-nums text-[#0A0A0A]">
+                                  {margin?.complete ? `${margin.cost.toFixed(3)} ${currency}` : '—'}
+                                </span>
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-4 text-right">
+                                {margin?.complete && margin.profit !== null ? (
+                                  <span className="inline-flex items-center gap-2">
+                                    <span className={cn('font-mono text-xs font-bold tabular-nums', margin.profit < 0 ? 'text-[#8A210A]' : 'text-[#1B5E2B]')}>
+                                      {margin.profit.toFixed(3)} {currency}
+                                    </span>
+                                    {margin.profit < 0 && <span className="rounded-full bg-[#FBDDD5] px-2.5 py-1 text-[9px] font-bold text-[#8A210A]">à perte</span>}
+                                  </span>
+                                ) : <span className="font-mono text-xs text-[#5C5C5C]">—</span>}
+                              </td>
+                            </>
+                          )}
+                          <td className="whitespace-nowrap px-4 py-4 text-right">
+                            <span className="font-mono text-xs font-bold tabular-nums text-[#0A0A0A]">{sale.total.toFixed(3)} {currency}</span>
                           </td>
-                          <td className="px-6 py-4 text-right whitespace-nowrap">
-                            <span className="text-xs font-black text-slate-900 font-mono">{sale.total.toFixed(3)} {currency}</span>
+                          <td className="whitespace-nowrap px-4 py-4 text-right">
+                            <span className="font-mono text-xs font-semibold tabular-nums text-[#0A0A0A]">{sale.paid.toFixed(3)} {currency}</span>
                           </td>
-                          <td className="px-6 py-4 text-right whitespace-nowrap">
-                            <span className="text-xs font-bold text-emerald-650 font-mono">{sale.paid.toFixed(3)} {currency}</span>
-                          </td>
-                          <td className="px-6 py-4 text-right whitespace-nowrap">
+                          <td className="whitespace-nowrap px-4 py-4 text-right">
                             {sale.debt > 0 ? (
-                              <span className="text-xs font-bold text-rose-600 font-mono">-{sale.debt.toFixed(3)} {currency}</span>
+                              <span className="font-mono text-xs font-bold tabular-nums text-[#8A210A]">-{sale.debt.toFixed(3)} {currency}</span>
                             ) : (
-                              <span className="text-xs font-bold text-slate-400 font-mono">0.000 {currency}</span>
+                              <span className="font-mono text-xs font-semibold tabular-nums text-[#5C5C5C]">0.000 {currency}</span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-center whitespace-nowrap">
+                          <td className="whitespace-nowrap px-4 py-4 text-center">
                             <span className={cn(
-                              "inline-flex items-center px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider",
+                              "inline-flex items-center rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-wider",
                               sale.debt > 0 
-                                ? "bg-rose-50 text-rose-600 border border-rose-100" 
-                                : "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                                ? "bg-[#FBDDD5] text-[#8A210A]"
+                                : "bg-[#E3EFE4] text-[#1B5E2B]"
                             )}>
                               {sale.debt > 0 ? 'Crédit' : 'Réglé'}
                             </span>
@@ -1521,42 +1778,39 @@ export default function Dashboard({ userProfile }: DashboardProps) {
         <div className="space-y-6">
           
           {/* Section: Top Products TODAY */}
-          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden font-sans">
-            <div className="p-5 border-b border-slate-50 flex items-center justify-between bg-slate-50/40">
+          <div className="overflow-hidden rounded-[24px] border border-[#E2E2DF] bg-white">
+            <div className="flex items-center justify-between border-b border-[#E2E2DF] bg-[#F4F4F2] p-5">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shadow-xs">
-                  <Package className="w-4.5 h-4.5" />
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0A0A0A] text-white">
+                  <Package className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider">Top Ventes Aujourd'hui</h2>
-                  <p className="text-[10px] text-slate-455 font-semibold uppercase mt-0.5">Par volume d'articles vendus</p>
+                  <h2 className="font-display text-xs font-bold uppercase tracking-wider text-[#0A0A0A]">Top Ventes Aujourd'hui</h2>
+                  <p className="mt-0.5 text-[10px] font-semibold uppercase text-[#5C5C5C]">Par volume d'articles vendus</p>
                 </div>
               </div>
             </div>
 
-            <div className="p-5 divide-y divide-slate-50">
+            <div className="divide-y divide-[#E2E2DF] p-5">
               {dashboardData.topProductsToday.length === 0 ? (
                 <div className="text-center py-10">
-                  <Package className="w-10 h-10 text-slate-200 mx-auto mb-2" />
-                  <p className="text-slate-400 font-bold text-[11px] uppercase tracking-wider">Aucune vente aujourd'hui</p>
+                  <Package className="mx-auto mb-2 h-10 w-10 text-[#B8B8B8]" />
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[#5C5C5C]">Aucune vente aujourd'hui</p>
                 </div>
               ) : (
                 dashboardData.topProductsToday.map((p, idx) => (
-                  <div key={idx} className="flex items-center gap-3 py-3 first:pt-1 last:pb-1 hover:bg-slate-50/30 transition-all duration-200">
+                  <div key={idx} className="flex items-center gap-3 py-3 transition-colors first:pt-1 last:pb-1 hover:bg-[#F4F4F2]">
                     <div className={cn(
-                      "w-7 h-7 rounded-lg flex items-center justify-center font-extrabold text-xs shrink-0 shadow-xs",
-                      idx === 0 ? "bg-amber-100 text-amber-700" :
-                      idx === 1 ? "bg-slate-100 text-slate-700" :
-                      idx === 2 ? "bg-orange-100 text-orange-700" : "bg-slate-50 text-slate-500"
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] text-xs font-extrabold text-[#0A0A0A]"
                     )}>
                       #{idx + 1}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-extrabold text-xs text-slate-700 truncate">{p.name}</h4>
+                      <h4 className="truncate text-xs font-bold text-[#0A0A0A]">{p.name}</h4>
                       <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-[10px] text-slate-450 font-bold font-mono">{p.count} unités</span>
-                        <span className="text-[10px] text-slate-300">|</span>
-                        <span className="text-[10px] text-indigo-500 font-black">CA: {p.total.toFixed(3)} {currency}</span>
+                        <span className="font-mono text-[10px] font-bold text-[#5C5C5C]">{p.count} unités</span>
+                        <span className="text-[10px] text-[#B8B8B8]">|</span>
+                        <span className="text-[10px] font-black text-[#0A0A0A]">CA: {p.total.toFixed(3)} {currency}</span>
                       </div>
                     </div>
                   </div>
@@ -1566,32 +1820,32 @@ export default function Dashboard({ userProfile }: DashboardProps) {
           </div>
 
           {/* Section: Low Stock Warning */}
-          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="p-5 border-b border-slate-50 flex items-center justify-between bg-slate-50/40">
+          <div className="overflow-hidden rounded-[24px] border border-[#E2E2DF] bg-white">
+            <div className="flex items-center justify-between border-b border-[#E2E2DF] bg-[#F4F4F2] p-5">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shadow-xs">
-                  <AlertTriangle className="w-4.5 h-4.5" />
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#FBDDD5] text-[#B3261E]">
+                  <AlertTriangle className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider">Alerte Stock Faible</h2>
-                  <p className="text-[10px] text-slate-450 font-semibold uppercase mt-0.5">
+                  <h2 className="font-display text-xs font-bold uppercase tracking-wider text-[#0A0A0A]">Alerte Stock Faible</h2>
+                  <p className="mt-0.5 text-[10px] font-semibold uppercase text-[#5C5C5C]">
                     Seuil configuré : {dashboardData.configuredMinStock} unités
                   </p>
                 </div>
               </div>
               <span className={cn(
-                "px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider",
-                dashboardData.lowStockAlerts.length > 0 ? "bg-rose-100 text-rose-700" : "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                "rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider",
+                dashboardData.lowStockAlerts.length > 0 ? "bg-[#FBDDD5] text-[#8A210A]" : "bg-[#F4F4F2] text-[#5C5C5C]"
               )}>
                 {dashboardData.lowStockAlerts.length} produits
               </span>
             </div>
 
-            <div className="p-5 max-h-[350px] overflow-y-auto divide-y divide-slate-50">
+            <div className="max-h-[350px] divide-y divide-[#E2E2DF] overflow-y-auto p-5">
               {dashboardData.lowStockAlerts.length === 0 ? (
                 <div className="text-center py-10">
-                  <Package className="w-10 h-10 text-slate-200 mx-auto mb-2" />
-                  <p className="text-slate-400 font-bold text-[11px] uppercase tracking-wider">État des stocks satisfaisant</p>
+                  <Package className="mx-auto mb-2 h-10 w-10 text-[#B8B8B8]" />
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[#5C5C5C]">État des stocks satisfaisant</p>
                 </div>
               ) : (
                 dashboardData.lowStockAlerts.map((product) => {
@@ -1602,13 +1856,13 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                     <div 
                       key={product.id} 
                       onClick={() => openHistoryModal('stock')}
-                      className="flex items-center justify-between py-3 first:pt-1 last:pb-1 hover:bg-slate-50/60 -mx-2 px-2 rounded-xl transition-colors cursor-pointer group"
+                      className="group -mx-2 flex cursor-pointer items-center justify-between rounded-xl px-2 py-3 transition-colors first:pt-1 last:pb-1 hover:bg-[#F4F4F2]"
                     >
                       <div className="min-w-0 flex-1 pr-2">
-                        <h4 className="font-extrabold text-xs text-slate-700 truncate group-hover:text-indigo-600 transition-colors" title={product.name}>
+                        <h4 className="truncate text-xs font-bold text-[#0A0A0A] transition-colors" title={product.name}>
                           {product.name}
                         </h4>
-                        <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
+                        <p className="mt-0.5 text-[10px] font-semibold text-[#5C5C5C]">
                           Seuil minimal : {effectiveThreshold} unités
                         </p>
                       </div>
@@ -1672,7 +1926,7 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                     {activeModal === 'profit' && "Rendement financier après déduction du coût d'achat"}
                     {activeModal === 'debt' && "Encours clients et d'impayés du jour"}
                     {activeModal === 'sales' && "Intensité de l'activité du magasin"}
-                    {activeModal === 'stock' && (canViewMargin
+                    {activeModal === 'stock' && (canShowMargin
                       ? "Analyse en temps réel de la valeur d'achat, de vente et des marges bénéficiaires de l'inventaire actuel"
                       : "Analyse en temps réel du stock disponible et des revenus potentiels")}
                   </p>
@@ -1718,17 +1972,17 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                         <span className="text-slate-900 font-black font-mono">{stockValuation.totalStockQty}</span>
                       </div>
                       <div className="hidden sm:block w-px h-3.5 bg-slate-150"></div>
-                      {canViewBuyPrice && <div>
+                      {canShowBuyPrice && <div>
                         <span>Valeur d'Achat : </span>
                         <span className="text-emerald-650 font-black font-mono">{stockValuation.totalBuyValue.toFixed(3)} {currency}</span>
                       </div>}
-                      {canViewBuyPrice && <div className="hidden sm:block w-px h-3.5 bg-slate-150"></div>}
+                      {canShowBuyPrice && <div className="hidden sm:block w-px h-3.5 bg-slate-150"></div>}
                       <div>
                         <span>Revenus Est. : </span>
                         <span className="text-indigo-600 font-black font-mono">{stockValuation.totalSellValue.toFixed(3)} {currency}</span>
                       </div>
-                      {canViewMargin && <div className="hidden sm:block w-px h-3.5 bg-slate-150"></div>}
-                      {canViewMargin && <div>
+                      {canShowMargin && <div className="hidden sm:block w-px h-3.5 bg-slate-150"></div>}
+                      {canShowMargin && <div>
                         <span>Marge Est. : </span>
                         <span className="text-purple-650 font-black font-mono">{stockValuation.theoreticalMargin.toFixed(3)} {currency} ({stockValuation.marginRatio.toFixed(1)}%)</span>
                       </div>}
@@ -1855,11 +2109,11 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                               </div>
                             </th>
                             <th className="px-6 py-3 text-center">Quantité en Stock</th>
-                            {canViewBuyPrice && <th className="px-6 py-3 text-right">Prix d'Achat Unit.</th>}
+                            {canShowBuyPrice && <th className="px-6 py-3 text-right">Prix d'Achat Unit.</th>}
                             <th className="px-6 py-3 text-right">Prix de Vente Unit.</th>
-                            {canViewBuyPrice && <th className="px-6 py-3 text-right">Valeur d'Achat Totale</th>}
+                            {canShowBuyPrice && <th className="px-6 py-3 text-right">Valeur d'Achat Totale</th>}
                             <th className="px-6 py-3 text-right">Valeur de Vente Totale (Revenus Est.)</th>
-                            {canViewMargin && <th 
+                            {canShowMargin && <th
                               onClick={() => { setSortField('value'); setSortAsc(!sortAsc); }}
                               className="px-6 py-3 cursor-pointer hover:bg-slate-155 transition-colors text-right select-none"
                             >
@@ -1975,19 +2229,19 @@ export default function Dashboard({ userProfile }: DashboardProps) {
                                   {stock} unités
                                 </span>
                               </td>
-                              {canViewBuyPrice && <td className="px-6 py-3.5 text-right font-semibold text-slate-500 font-mono">
+                              {canShowBuyPrice && <td className="px-6 py-3.5 text-right font-semibold text-slate-500 font-mono">
                                 {(product.buyPrice || 0).toFixed(3)} {currency}
                               </td>}
                               <td className="px-6 py-3.5 text-right font-bold text-slate-800 font-mono">
                                 {(product.sellPrice || 0).toFixed(3)} {currency}
                               </td>
-                              {canViewBuyPrice && <td className="px-6 py-3.5 text-right text-slate-500 font-mono">
+                              {canShowBuyPrice && <td className="px-6 py-3.5 text-right text-slate-500 font-mono">
                                 {buyVal.toFixed(3)} {currency}
                               </td>}
                               <td className="px-6 py-3.5 text-right font-black text-slate-700 font-mono">
                                 {sellVal.toFixed(3)} {currency}
                               </td>
-                              {canViewMargin && <td className="px-6 py-3.5 text-right whitespace-nowrap">
+                              {canShowMargin && <td className="px-6 py-3.5 text-right whitespace-nowrap">
                                 <span className="px-3 py-1 bg-indigo-50 text-indigo-700 font-black font-mono rounded-lg border border-indigo-100 text-xs">
                                   {profitVal.toFixed(3)} {currency}
                                 </span>
@@ -2459,8 +2713,8 @@ export default function Dashboard({ userProfile }: DashboardProps) {
           records={activeModal === 'stock' ? filteredAndSortedProducts : filteredAndSortedRecords} 
           storeSettings={storeSettings} 
           currency={currency} 
-          canViewBuyPrice={canViewBuyPrice}
-          canViewCosts={canViewCosts}
+          canViewBuyPrice={canShowBuyPrice}
+          canViewCosts={canShowMargin}
         />,
         document.body
       )}
