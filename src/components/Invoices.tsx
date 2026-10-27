@@ -14,7 +14,7 @@ import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { PrintableTicket } from './PrintableTicket';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
-import { calculatePurchaseTotals } from '../lib/purchaseAccounting';
+import { calculatePurchaseTotals, getPurchaseCancellationStock, getPurchasePaymentBalance } from '../lib/purchaseAccounting';
 
 interface InvoicesProps {
   userProfile: UserProfile | null;
@@ -35,6 +35,10 @@ interface PurchaseInvoiceRecord {
   note?: string;
   attachment?: PurchaseAttachment;
   items?: PurchaseLine[];
+  sessionId?: string;
+  cancelledAt?: any;
+  cancelledBy?: string;
+  cancellationReason?: string;
 }
 
 interface PurchaseAttachment {
@@ -56,6 +60,15 @@ interface SupplierRecord {
   name: string;
   phone?: string;
   ownerId: string;
+}
+
+interface SupplierPaymentRecord {
+  id: string;
+  amountMilli: number;
+  type: string;
+  purchaseNumber?: string;
+  createdAt?: any;
+  createdBy?: string;
 }
 
 interface PurchaseCatalogItem {
@@ -138,6 +151,11 @@ export default function Invoices({ userProfile }: InvoicesProps) {
   const [purchaseSuccess, setPurchaseSuccess] = useState('');
   const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [purchaseFileLoading, setPurchaseFileLoading] = useState(false);
+  const [selectedPurchase, setSelectedPurchase] = useState<PurchaseInvoiceRecord | null>(null);
+  const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentRecord[]>([]);
+  const [supplierPaymentAmount, setSupplierPaymentAmount] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [showPurchaseCancelConfirm, setShowPurchaseCancelConfirm] = useState(false);
 
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
   const isStoreAdmin = userProfile?.role === 'admin' && (userProfile.ownerId || userProfile.uid) === userProfile.uid;
@@ -206,6 +224,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
         const purchases = snapshot.docs.map(item => ({ id: item.id, ...item.data() } as PurchaseInvoiceRecord));
         purchases.sort((a, b) => (toInvoiceDate(b.date)?.getTime() || 0) - (toInvoiceDate(a.date)?.getTime() || 0));
         setPurchaseInvoices(purchases);
+        setSelectedPurchase(current => current ? (purchases.find(item => item.id === current.id) || current) : current);
       }, error => handleFirestoreError(error, OperationType.LIST, 'purchases'))
       : () => setPurchaseInvoices([]);
 
@@ -227,6 +246,25 @@ export default function Invoices({ userProfile }: InvoicesProps) {
       setSuppliers(records);
     }, error => handleFirestoreError(error, OperationType.LIST, 'suppliers'));
   }, [ownerId, isStoreAdmin]);
+
+  useEffect(() => {
+    if (!selectedPurchase?.supplierId || !ownerId || !isStoreAdmin) {
+      setSupplierPayments([]);
+      return;
+    }
+    return onSnapshot(
+      query(
+        collection(db, 'supplier_debts', selectedPurchase.supplierId, 'payments'),
+        where('ownerId', '==', ownerId),
+      ),
+      snapshot => {
+        const payments = snapshot.docs.map(item => ({ id: item.id, ...item.data() } as SupplierPaymentRecord));
+        payments.sort((a, b) => (toInvoiceDate(b.createdAt)?.getTime() || 0) - (toInvoiceDate(a.createdAt)?.getTime() || 0));
+        setSupplierPayments(payments.filter(payment => payment.purchaseNumber === selectedPurchase.number));
+      },
+      error => handleFirestoreError(error, OperationType.LIST, 'supplier_debts/payments'),
+    );
+  }, [selectedPurchase?.supplierId, selectedPurchase?.number, ownerId, isStoreAdmin]);
 
   useEffect(() => {
     if (isNewInvoiceModalOpen) {
@@ -609,7 +647,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
     setPurchaseSaving(true);
     try {
-      const purchaseRef = doc(db, 'purchases', `purchase_${normalizedNumber}`);
+      const purchaseRef = doc(db, 'purchases', `purchase_${ownerId}_${normalizedNumber}`);
       const supplierRef = doc(db, 'suppliers', purchaseSupplierId);
       const debtRef = doc(db, 'supplier_debts', purchaseSupplierId);
       const paymentRef = doc(collection(db, 'supplier_debts', purchaseSupplierId, 'payments'));
@@ -666,6 +704,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           status: 'received',
           createdAt: serverTimestamp(),
           createdBy: userProfile.uid,
+          ...(totals.paidMilli > 0 ? { lastPaymentId: paymentRef.id } : {}),
           ...(activeSession ? { sessionId: activeSession.id } : {}),
         });
         transaction.set(debtRef, {
@@ -673,6 +712,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           supplierId: purchaseSupplierId,
           supplierName,
           balanceMilli: debtMilli,
+          lastEntryId: totals.paidMilli > 0 ? paymentRef.id : purchaseRef.id,
           updatedAt: serverTimestamp(),
         }, { merge: true });
 
@@ -740,6 +780,196 @@ export default function Invoices({ userProfile }: InvoicesProps) {
       setPurchaseError(cause instanceof Error ? cause.message : 'Impossible d’enregistrer la facture d’achat.');
     } finally {
       setPurchaseSaving(false);
+    }
+  };
+
+  const payPurchaseDebt = async () => {
+    if (!selectedPurchase || !selectedPurchase.supplierId || !ownerId || !userProfile || !isStoreAdmin) return;
+    setPurchaseError('');
+    let paymentMilli: number;
+    try {
+      paymentMilli = getPurchasePaymentBalance(
+        Number(selectedPurchase.debtMilli) || 0,
+        Number(supplierPaymentAmount.replace(',', '.')),
+      ).paymentMilli;
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Montant de règlement invalide.');
+      return;
+    }
+
+    setPaymentSaving(true);
+    try {
+      const purchaseRef = doc(db, 'purchases', selectedPurchase.id);
+      const debtRef = doc(db, 'supplier_debts', selectedPurchase.supplierId);
+      const paymentRef = doc(collection(db, 'supplier_debts', selectedPurchase.supplierId, 'payments'));
+      await runTransaction(db, async transaction => {
+        const [purchaseSnapshot, debtSnapshot] = await Promise.all([
+          transaction.get(purchaseRef),
+          transaction.get(debtRef),
+        ]);
+        if (!purchaseSnapshot.exists()) throw new Error('La facture d’achat est introuvable.');
+        const purchase = purchaseSnapshot.data();
+        if (purchase.ownerId !== ownerId || purchase.status !== 'received') {
+          throw new Error('Cette facture ne peut plus recevoir de règlement.');
+        }
+        const currentInvoiceDebt = Number(purchase.debtMilli) || 0;
+        getPurchasePaymentBalance(currentInvoiceDebt, paymentMilli / 1000);
+        if (!debtSnapshot.exists() || debtSnapshot.data().ownerId !== ownerId) {
+          throw new Error('La dette fournisseur est introuvable pour ce magasin.');
+        }
+        const activeSession = await requireOpenCashSession(transaction, userProfile.uid, ownerId);
+        const supplierBalance = Number(debtSnapshot.data().balanceMilli) || 0;
+        if (supplierBalance < paymentMilli) {
+          throw new Error('Le solde de la dette fournisseur est inférieur au règlement demandé.');
+        }
+        const nextPaid = (Number(purchase.paidMilli) || 0) + paymentMilli;
+        const nextInvoiceDebt = currentInvoiceDebt - paymentMilli;
+        transaction.update(purchaseRef, {
+          paidMilli: nextPaid,
+          debtMilli: nextInvoiceDebt,
+          lastPaymentId: paymentRef.id,
+          updatedAt: serverTimestamp(),
+        });
+        transaction.update(debtRef, {
+          balanceMilli: supplierBalance - paymentMilli,
+          lastEntryId: paymentRef.id,
+          updatedAt: serverTimestamp(),
+        });
+        transaction.set(paymentRef, {
+          ownerId,
+          supplierId: selectedPurchase.supplierId,
+          supplierName: purchase.supplierName || selectedPurchase.supplierName || '',
+          purchaseId: purchaseRef.id,
+          purchaseNumber: purchase.number,
+          amountMilli: paymentMilli,
+          type: 'purchase_debt_payment',
+          sessionId: activeSession.id,
+          createdAt: serverTimestamp(),
+          createdBy: userProfile.uid,
+        });
+        addCashSessionTotals(transaction, activeSession, {
+          expenses: paymentMilli / 1000,
+          expensesCash: paymentMilli / 1000,
+        });
+      });
+      setSupplierPaymentAmount('');
+      setPurchaseError('');
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Impossible d’enregistrer le règlement.');
+    } finally {
+      setPaymentSaving(false);
+    }
+  };
+
+  const cancelPurchaseInvoice = async () => {
+    if (!selectedPurchase || !selectedPurchase.supplierId || !ownerId || !userProfile || !isStoreAdmin) return;
+    setPurchaseError('');
+    setPaymentSaving(true);
+    try {
+      const purchaseRef = doc(db, 'purchases', selectedPurchase.id);
+      const debtRef = doc(db, 'supplier_debts', selectedPurchase.supplierId);
+      const lines = selectedPurchase.items || [];
+      if (!lines.length) throw new Error('Cette facture ne contient aucune ligne de stock annulable.');
+      const itemRefs = lines.map(line => doc(db, line.itemCollection, line.itemId));
+      const paymentRef = doc(collection(db, 'supplier_debts', selectedPurchase.supplierId, 'payments'));
+      await runTransaction(db, async transaction => {
+        const [purchaseSnapshot, debtSnapshot] = await Promise.all([
+          transaction.get(purchaseRef),
+          transaction.get(debtRef),
+        ]);
+        if (!purchaseSnapshot.exists()) throw new Error('La facture d’achat est introuvable.');
+        const purchase = purchaseSnapshot.data();
+        if (purchase.ownerId !== ownerId || purchase.status !== 'received') {
+          throw new Error('Cette facture est déjà annulée ou ne relève pas de ce magasin.');
+        }
+        if (!debtSnapshot.exists() || debtSnapshot.data().ownerId !== ownerId) {
+          throw new Error('La dette fournisseur est introuvable pour ce magasin.');
+        }
+        const snapshots = await Promise.all(itemRefs.map(ref => transaction.get(ref)));
+        const stockUpdates = snapshots.map((snapshot, index) => {
+          const line = lines[index];
+          if (!snapshot.exists() || snapshot.data().ownerId !== ownerId) {
+            throw new Error(`Impossible d’annuler : l’article « ${line.nameSnapshot} » n’est plus disponible.`);
+          }
+          let nextStock: number;
+          try {
+            nextStock = getPurchaseCancellationStock(Number(snapshot.data().stock) || 0, Number(line.quantity));
+          } catch {
+            throw new Error(`Annulation impossible : stock insuffisant pour « ${line.nameSnapshot} » (disponible : ${snapshot.data().stock || 0}, à reprendre : ${line.quantity}).`);
+          }
+          const version = (Number(snapshot.data().stockVersion) || 0) + 1;
+          return {
+            ref: itemRefs[index],
+            line,
+            stock: nextStock,
+            version,
+            movementId: `${line.itemCollection === 'parts' ? 'part' : 'product'}_${line.itemId}_v${version}`,
+          };
+        });
+        const purchaseDebt = Number(purchase.debtMilli) || 0;
+        const purchasePaid = Number(purchase.paidMilli) || 0;
+        const supplierBalance = Number(debtSnapshot.data().balanceMilli) || 0;
+        const newSupplierBalance = supplierBalance - purchaseDebt - purchasePaid;
+        if (!Number.isSafeInteger(newSupplierBalance)) throw new Error('Le solde fournisseur dépasse la limite autorisée.');
+        const cancellationRecord = {
+          ownerId,
+          supplierId: selectedPurchase.supplierId,
+          supplierName: purchase.supplierName || selectedPurchase.supplierName || '',
+          purchaseId: purchaseRef.id,
+          purchaseNumber: purchase.number,
+          amountMilli: -purchasePaid,
+          type: 'purchase_cancellation_credit',
+          createdAt: serverTimestamp(),
+          createdBy: userProfile.uid,
+        };
+        transaction.update(purchaseRef, {
+          status: 'cancelled',
+          debtMilli: 0,
+          lastPaymentId: paymentRef.id,
+          cancelledAt: serverTimestamp(),
+          cancelledBy: userProfile.uid,
+          cancellationReason: 'Annulation administrative avec reprise du stock disponible.',
+          updatedAt: serverTimestamp(),
+        });
+        transaction.update(debtRef, {
+          balanceMilli: newSupplierBalance,
+          lastEntryId: paymentRef.id,
+          updatedAt: serverTimestamp(),
+        });
+        stockUpdates.forEach(({ ref, line, stock, version, movementId }, index) => {
+          transaction.update(ref, {
+            stock,
+            stockVersion: version,
+            lastStockMovementId: movementId,
+            ownerId,
+            userId: userProfile.uid,
+          });
+          transaction.set(doc(db, 'stock_movements', movementId), {
+            type: 'purchase_cancel',
+            inventoryCollection: line.itemCollection,
+            productId: line.itemId,
+            productName: line.nameSnapshot,
+            purchaseId: purchaseRef.id,
+            purchaseNumber: purchase.number,
+            lineIndex: index,
+            delta: -line.quantity,
+            quantity: line.quantity,
+            version,
+            ownerId,
+            userId: userProfile.uid,
+            userLabel: userProfile.name || userProfile.email || 'Administrateur',
+            createdAt: serverTimestamp(),
+          });
+        });
+        transaction.set(paymentRef, cancellationRecord);
+      });
+      setShowPurchaseCancelConfirm(false);
+      setSelectedPurchase(null);
+      setPurchaseError('');
+    } catch (cause) {
+      setPurchaseError(cause instanceof Error ? cause.message : 'Impossible d’annuler cette facture.');
+    } finally {
+      setPaymentSaving(false);
     }
   };
 
@@ -940,11 +1170,12 @@ export default function Invoices({ userProfile }: InvoicesProps) {
                   <th className="px-6 py-4 text-right">Total</th>
                   <th className="px-6 py-4 text-right">Reste dû</th>
                   <th className="px-6 py-4">Statut</th>
+                  <th className="px-6 py-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100/70">
-                {loading ? <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">Chargement…</td></tr> :
-                  filteredPurchases.length === 0 ? <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">Aucune facture d’achat enregistrée.</td></tr> :
+                {loading ? <tr><td colSpan={7} className="px-6 py-10 text-center text-gray-500">Chargement…</td></tr> :
+                  filteredPurchases.length === 0 ? <tr><td colSpan={7} className="px-6 py-10 text-center text-gray-500">Aucune facture d’achat enregistrée.</td></tr> :
                   filteredPurchases.map(purchase => {
                     const purchaseDate = toInvoiceDate(purchase.date);
                     const total = typeof purchase.total === 'number' ? purchase.total : (Number(purchase.totalMilli) || 0) / 1000;
@@ -957,6 +1188,10 @@ export default function Invoices({ userProfile }: InvoicesProps) {
                         <td className="px-6 py-4 text-right font-black font-mono">{total.toFixed(3)} {storeSettings?.currency || 'DT'}</td>
                         <td className="px-6 py-4 text-right font-black font-mono text-rose-700">{debt.toFixed(3)} {storeSettings?.currency || 'DT'}</td>
                         <td className="px-6 py-4">{purchase.status === 'cancelled' ? 'Annulée' : 'Reçue'}</td>
+                        <td className="px-6 py-4 text-right">
+                          <button type="button" onClick={() => { setSelectedPurchase(purchase); setSupplierPaymentAmount(''); setPurchaseError(''); }}
+                            className="min-h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-indigo-700 hover:bg-indigo-50">Détails / Régler</button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -1067,6 +1302,82 @@ export default function Invoices({ userProfile }: InvoicesProps) {
               </button>
             </footer>
           </form>
+        </div>
+      )}
+
+      {selectedPurchase && isStoreAdmin && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-3 sm:p-5" role="presentation">
+          <section role="dialog" aria-modal="true" aria-labelledby="purchase-detail-title" className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <header className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+              <div>
+                <h2 id="purchase-detail-title" className="text-xl font-black text-slate-900">Facture {selectedPurchase.number || selectedPurchase.invoiceNumber}</h2>
+                <p className="mt-1 text-sm text-slate-500">{selectedPurchase.supplierName || 'Fournisseur'} · {toInvoiceDate(selectedPurchase.date) ? format(toInvoiceDate(selectedPurchase.date)!, 'dd MMM yyyy', { locale: fr }) : 'Date inconnue'}</p>
+              </div>
+              <button type="button" onClick={() => { setSelectedPurchase(null); setShowPurchaseCancelConfirm(false); setPurchaseError(''); }} aria-label="Fermer" className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
+            </header>
+            <div className="space-y-4 overflow-y-auto p-5">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase text-slate-500">Total</p><p className="mt-1 font-mono font-black">{((Number(selectedPurchase.totalMilli) || 0) / 1000).toFixed(3)} DT</p></div>
+                <div className="rounded-xl bg-emerald-50 p-3"><p className="text-[10px] font-bold uppercase text-emerald-700">Payé</p><p className="mt-1 font-mono font-black text-emerald-800">{((Number(selectedPurchase.paidMilli) || 0) / 1000).toFixed(3)} DT</p></div>
+                <div className="rounded-xl bg-rose-50 p-3"><p className="text-[10px] font-bold uppercase text-rose-700">Reste dû</p><p className="mt-1 font-mono font-black text-rose-800">{((Number(selectedPurchase.debtMilli) || 0) / 1000).toFixed(3)} DT</p></div>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-100">
+                <table className="w-full min-w-[400px] text-left text-sm">
+                  <thead className="bg-slate-50 text-[10px] uppercase text-slate-500"><tr><th className="p-3">Article</th><th>Qté</th><th className="text-right">Coût unitaire</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(selectedPurchase.items || []).map((line, index) => <tr key={`${line.itemCollection}:${line.itemId}:${index}`}><td className="p-3 font-semibold">{line.nameSnapshot}</td><td>{line.quantity}</td><td className="p-3 text-right font-mono">{(line.unitCostMilli / 1000).toFixed(3)} DT</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+              {selectedPurchase.note && <p className="whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{selectedPurchase.note}</p>}
+              {selectedPurchase.attachment?.url && <a href={selectedPurchase.attachment.url} target="_blank" rel="noreferrer" className="text-sm font-bold text-indigo-700 underline">Ouvrir la pièce jointe</a>}
+              {selectedPurchase.attachment?.dataUrl && <a href={selectedPurchase.attachment.dataUrl} target="_blank" rel="noreferrer" className="block"><img src={selectedPurchase.attachment.dataUrl} alt={`Pièce jointe facture ${selectedPurchase.number}`} className="max-h-56 rounded-xl border border-slate-200 object-contain" /></a>}
+
+              {selectedPurchase.status === 'received' && Number(selectedPurchase.debtMilli) > 0 && (
+                <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4">
+                  <h3 className="text-sm font-black text-slate-800">Régler la dette fournisseur</h3>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input type="number" min="0.001" step="0.001" max={(Number(selectedPurchase.debtMilli) || 0) / 1000} value={supplierPaymentAmount} onChange={event => setSupplierPaymentAmount(event.target.value)} placeholder="Montant en DT" className="min-h-11 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-sm" />
+                    <button type="button" onClick={() => void payPurchaseDebt()} disabled={paymentSaving || !cashSession || !supplierPaymentAmount} className="min-h-11 rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50">Régler</button>
+                  </div>
+                  {!cashSession && <p className="text-xs font-semibold text-amber-800">{cashSessionLoading ? 'Vérification de la caisse…' : 'Une caisse ouverte est nécessaire pour enregistrer le paiement.'}</p>}
+                </div>
+              )}
+
+              <section>
+                <h3 className="mb-2 text-sm font-black text-slate-800">Historique des paiements</h3>
+                {supplierPayments.length === 0 ? <p className="text-xs text-slate-500">Aucun paiement ni mouvement de règlement.</p> : (
+                  <ul className="divide-y divide-slate-100 rounded-xl border border-slate-100">
+                    {supplierPayments.map(payment => {
+                      const date = toInvoiceDate(payment.createdAt);
+                      const amount = (Number(payment.amountMilli) || 0) / 1000;
+                      return <li key={payment.id} className="flex flex-wrap justify-between gap-2 p-3 text-xs">
+                        <span className="text-slate-600">{date ? format(date, 'dd/MM/yyyy HH:mm', { locale: fr }) : 'Date inconnue'} · {payment.type === 'purchase_cancellation_credit' ? 'Annulation / avoir' : payment.type === 'purchase_initial_payment' ? 'Paiement initial' : 'Règlement'}</span>
+                        <strong className={`font-mono ${amount < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{amount < 0 ? '+' : '−'}{Math.abs(amount).toFixed(3)} DT</strong>
+                      </li>;
+                    })}
+                  </ul>
+                )}
+              </section>
+
+              {selectedPurchase.status === 'received' && <div className="space-y-3 border-t border-slate-100 pt-4">
+                {!showPurchaseCancelConfirm ? (
+                  <button type="button" onClick={() => { setShowPurchaseCancelConfirm(true); setPurchaseError(''); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-rose-200 px-4 text-sm font-bold text-rose-700 hover:bg-rose-50"><Ban className="h-4 w-4" /> Annuler la facture</button>
+                ) : (
+                  <div className="space-y-3 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                    <p className="text-sm font-bold text-rose-800">Confirmer l’annulation ? Le stock sera repris uniquement si les quantités sont disponibles. Les paiements déjà effectués seront portés en avoir fournisseur.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => void cancelPurchaseInvoice()} disabled={paymentSaving} className="min-h-10 rounded-xl bg-rose-600 px-4 text-sm font-bold text-white hover:bg-rose-700 disabled:opacity-50">{paymentSaving ? 'Annulation…' : 'Confirmer l’annulation'}</button>
+                      <button type="button" onClick={() => setShowPurchaseCancelConfirm(false)} disabled={paymentSaving} className="min-h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700">Retour</button>
+                    </div>
+                  </div>
+                )}
+              </div>}
+              {selectedPurchase.status === 'cancelled' && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-700">Cette facture est annulée. {selectedPurchase.cancellationReason}</p>}
+              {purchaseError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700">{purchaseError}</p>}
+            </div>
+          </section>
         </div>
       )}
 
