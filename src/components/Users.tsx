@@ -674,8 +674,8 @@ export default function Users({ userProfile }: UsersProps) {
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            <UsersIcon className="w-7 h-7 text-indigo-600 fill-indigo-100/40" />
+          <h1 className="flex items-center gap-2 font-display text-3xl font-black tracking-tight text-slate-900">
+            <UsersIcon className="h-8 w-8 text-indigo-600 fill-indigo-100/40" />
             Gestion des Utilisateurs
           </h1>
           <p className="text-xs text-slate-500 font-medium">
@@ -701,7 +701,7 @@ export default function Users({ userProfile }: UsersProps) {
               setPermissionsInput(permissionsForPreset('cashier'));
               setIsModalOpen(true);
             }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white text-xs font-extrabold uppercase tracking-wider rounded-xl hover:bg-indigo-700 transition-all shadow-md shadow-indigo-600/10 active:scale-95 shrink-0"
+            className="inline-flex shrink-0 items-center gap-2 rounded-2xl bg-indigo-600 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-white shadow-md shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-95"
           >
             <UserPlus className="w-4 h-4" />
             Créer un utilisateur

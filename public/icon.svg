@@ -1,35 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
-  <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#4f46e5;stop-opacity:1" />
-    </linearGradient>
-  </defs>
-  <!-- Background -->
-  <rect width="512" height="512" rx="128" fill="url(#grad)" />
-  
-  <!-- Icon Graphics: Cash Register / Bolt -->
-  <g transform="translate(112, 112)" fill="white">
-    <!-- Base -->
-    <path d="M 40 220 L 248 220 L 248 248 L 40 248 Z" rx="8" />
-    <path d="M 60 80 L 228 80 L 210 210 L 78 210 Z" />
-    <!-- Screen -->
-    <rect x="84" y="24" width="120" height="48" rx="8" fill="#e0e7ff" />
-    <rect x="94" y="32" width="100" height="32" rx="4" fill="#1e1b4b" />
-    <!-- Keys / Keypad -->
-    <circle cx="100" cy="110" r="10" fill="#4f46e5" />
-    <circle cx="130" cy="110" r="10" fill="#4f46e5" />
-    <circle cx="160" cy="110" r="10" fill="#4f46e5" />
-    <circle cx="190" cy="110" r="10" fill="#4f46e5" />
-
-    <circle cx="100" cy="140" r="10" fill="#4f46e5" />
-    <circle cx="130" cy="140" r="10" fill="#4f46e5" />
-    <circle cx="160" cy="140" r="10" fill="#4f46e5" />
-    <circle cx="190" cy="140" r="10" fill="#4f46e5" />
-
-    <circle cx="100" cy="170" r="10" fill="#4f46e5" />
-    <circle cx="130" cy="170" r="10" fill="#4f46e5" />
-    <circle cx="160" cy="170" r="10" fill="#4f46e5" />
-    <circle cx="190" cy="170" r="10" fill="#10b981" /> <!-- green check / active key -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#5846E8"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="166" y="77" width="180" height="358" rx="39" stroke-width="20"/>
+    <path d="M225 112h62" stroke-width="14"/>
+    <circle cx="256" cy="398" r="10" fill="#FFFFFF" stroke="none"/>
   </g>
+  <path d="m317 290 68-68 25 25-68 68-42 17 17-42Z" fill="#4385F5"/>
+  <path d="m367 239 25 25" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
 </svg>

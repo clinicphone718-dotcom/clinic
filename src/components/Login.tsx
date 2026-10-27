@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { ShoppingCart, Mail, Lock, AlertCircle, Chrome } from 'lucide-react';
+import { Mail, Lock, AlertCircle, Chrome } from 'lucide-react';
 import { ALLOW_SELF_SIGNUP } from '../config/firebase';
 import { APP_LOGO_URL, APP_NAME, APP_TAGLINE } from '../config/brand';
+import BrandLogo from './BrandLogo';
 
 export default function Login({ initialMessage = '' }: { initialMessage?: string }) {
   const [email, setEmail] = useState('');
@@ -135,18 +136,11 @@ export default function Login({ initialMessage = '' }: { initialMessage?: string
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-100 via-indigo-50/50 to-cyan-50 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-[#F6F7FB] p-4">
       <div className="app-card max-w-md w-full rounded-3xl p-6 sm:p-8">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-50 to-cyan-50 text-indigo-600 mb-4 shadow-sm border border-indigo-100">
-            {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full rounded-2xl object-cover" /> : <ShoppingCart className="w-8 h-8 text-indigo-600" />}
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-black tracking-tight font-display">
-            <span className="bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 bg-clip-text text-transparent">
-              {APP_NAME}
-            </span>
-            <span className="block text-base sm:text-lg font-bold text-slate-500 mt-1 font-sans tracking-wide">{APP_TAGLINE}</span>
-          </h1>
+          <BrandLogo variant="full" logoUrl={APP_LOGO_URL} className="mb-5 justify-center" />
+          <h1 className="sr-only">{APP_NAME}</h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-2 font-medium">
             Connectez-vous à votre espace magasin
           </p>

@@ -1140,8 +1140,8 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#E2E2DF] pb-5">
         <div>
-          <h1 className="font-display text-[34px] font-bold leading-tight tracking-tight text-[#0A0A0A] lg:text-[52px]">Tableau de Bord</h1>
-          <p className="mt-1 text-xs font-medium uppercase tracking-wider text-[#5C5C5C]">Performance financière et opérationnelle en temps réel</p>
+          <h1 className="font-display text-[34px] font-bold leading-tight tracking-tight text-[#20263A] lg:text-[52px]">Tableau de Bord</h1>
+          <p className="mt-1 text-xs font-medium uppercase tracking-wider text-[#5F667A]">Performance financière et opérationnelle en temps réel</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {dashboardData.lowStockAlerts.length > 0 && stockAlertDismissed && (
@@ -1155,44 +1155,44 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
               <span>{dashboardData.lowStockAlerts.length} alerte{dashboardData.lowStockAlerts.length > 1 ? 's' : ''} de stock (Afficher)</span>
             </button>
           )}
-          <div className="flex min-h-11 items-center gap-2 rounded-full border border-[#E2E2DF] bg-white px-4 py-2 text-xs font-semibold text-[#5C5C5C]">
-            <Calendar className="h-4 w-4" />
+          <div className="flex min-h-11 items-center gap-2 rounded-xl border border-[#E6E9F2] bg-white px-4 py-2 text-xs font-semibold text-[#5F667A]">
+            <Calendar className="h-4 w-4 text-[#5846E8]" />
             <span>Aujourd'hui, {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
           </div>
         </div>
       </div>
 
-      <section className="grid gap-4 overflow-hidden rounded-[28px] bg-[#0A0A0A] p-5 text-white sm:p-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(260px,0.7fr)] lg:items-end lg:p-10">
+      <section className="hidden">
         <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#B8B8B8]">Bénéfice net, aujourd'hui</p>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/90">Bénéfice net, aujourd'hui</p>
           <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className="font-display text-[62px] font-bold leading-none tracking-[-0.06em] tabular-nums lg:text-[104px]">
               {canShowMargin && todaySummary.netProfit !== null ? todaySummary.netProfit.toFixed(3) : '—'}
             </span>
             {canShowMargin && todaySummary.netProfit !== null && (
-              <span className="text-xl font-semibold text-[#B8B8B8]">{currency}</span>
+              <span className="text-xl font-semibold text-white/90">{currency}</span>
             )}
           </div>
           {canShowMargin && (
             <div className="mt-6 flex flex-wrap gap-2">
-              <span className="rounded-full bg-[#1C1C1C] px-4 py-2 text-xs font-semibold text-white">
+              <span className="rounded-full border border-white/25 bg-white/10 px-4 py-2 text-xs font-semibold text-white">
                 Bénéfice brut <span className="ml-1 font-display tabular-nums">{todaySummary.grossProfit === null ? '—' : `${todaySummary.grossProfit.toFixed(3)} ${currency}`}</span>
               </span>
-              <span className="rounded-full bg-[#1C1C1C] px-4 py-2 text-xs font-semibold text-white">
+              <span className="rounded-full border border-white/25 bg-white/10 px-4 py-2 text-xs font-semibold text-white">
                 Dépenses <span className="ml-1 font-display tabular-nums">{todaySummary.expenses.toFixed(3)} {currency}</span>
               </span>
             </div>
           )}
           {canShowMargin && todaySummary.netProfit === null && (
-            <p role="status" className="mt-4 max-w-xl text-xs leading-5 text-[#D0D0D0]">
+            <p role="status" className="mt-4 max-w-xl text-xs leading-5 text-white/90">
               Bénéfice masqué : des coûts historiques sont manquants. Aucun coût estimé n’est utilisé.
             </p>
           )}
         </div>
         <div className="min-w-0">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#B8B8B8]">Bénéfice net · 7 jours</p>
-            {canShowMargin && <span className="text-[10px] text-[#8A8A8A]">Derniers jours</span>}
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-white/90">Bénéfice net · 7 jours</p>
+            {canShowMargin && <span className="text-[10px] text-white/75">Derniers jours</span>}
           </div>
           <div className="flex h-24 items-end gap-2" role="img" aria-label="Graphique du bénéfice net sur les sept derniers jours">
             {sevenDaySummaries.map(({ date, netProfit }) => {
@@ -1204,12 +1204,12 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
                     className={cn(
                       'w-full rounded-t-md',
                       !canShowMargin || netProfit === null ? 'bg-[#3A3A3A]' :
-                        netProfit < 0 ? 'bg-[#B3261E]' : 'bg-[#F4F4F2]',
+                        netProfit < 0 ? 'bg-[#FF8A3D]' : 'bg-white',
                     )}
                     style={{ height: `${height}%` }}
                     title={`${date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} : ${netProfit === null ? 'indisponible' : `${netProfit.toFixed(3)} ${currency}`}`}
                   />
-                  <span className="text-[10px] font-semibold capitalize text-[#8A8A8A]">
+                  <span className="text-[10px] font-semibold capitalize text-white/80">
                     {date.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '')}
                   </span>
                 </div>
@@ -1219,10 +1219,10 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
         </div>
       </section>
 
-      <section className="space-y-4">
+      <section className="hidden">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-black uppercase tracking-wider text-[#5C5C5C]">Synthèse financière</h2>
-          <div className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-[#E2E2DF] bg-white p-1" role="group" aria-label="Période de la synthèse financière">
+          <h2 className="text-sm font-black uppercase tracking-wider text-[#20263A]">Synthèse financière</h2>
+          <div className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-[#E6E9F2] bg-white p-1" role="group" aria-label="Période de la synthèse financière">
             {([
               ['today', "Aujourd'hui"],
               ['7', '7 jours'],
@@ -1237,8 +1237,8 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
                 aria-pressed={financialPeriod === period}
                 onClick={() => setFinancialPeriod(period)}
                 className={cn(
-                  'min-h-11 shrink-0 rounded-full px-4 text-xs font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0A0A0A]',
-                  financialPeriod === period ? 'bg-[#0A0A0A] text-white' : 'text-[#5C5C5C] hover:bg-[#F4F4F2]',
+                  'min-h-11 shrink-0 rounded-full px-4 text-xs font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5846E8]',
+                  financialPeriod === period ? 'bg-[#5846E8] text-white' : 'text-[#5F667A] hover:bg-[#F6F7FB]',
                 )}
               >
                 {label}
@@ -1247,18 +1247,27 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
           </div>
         </div>
         <div className={cn('grid grid-cols-2 gap-3', canShowMargin ? 'xl:grid-cols-4' : 'lg:grid-cols-3')}>
-          {financialCards.map(({ label, value, unit, icon: Icon, count }) => (
-            <article key={label} className="flex min-h-32 min-w-0 items-center justify-between rounded-[22px] border border-[#E2E2DF] bg-white p-4 sm:p-5">
+          {financialCards.map(({ label, value, unit, icon: Icon, count }, index) => {
+            const accent = ['#5846E8', '#4385F5', '#FF8A3D', '#159B72'][index % 4];
+            return (
+            <article
+              key={label}
+              className="stat-card flex min-h-32 min-w-0 items-center justify-between p-4 sm:p-5"
+              style={{ '--stat-accent': accent } as React.CSSProperties}
+            >
               <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">{label}</p>
-                <p className="mt-2 break-words font-display text-xl font-bold tabular-nums text-[#0A0A0A] sm:text-2xl">
+                <p className="stat-label">{label}</p>
+                <p className="stat-value mt-2 break-words text-[#20263A]">
                   {value === null ? '—' : count ? value : value.toFixed(3)}
                   {value !== null && <span className="ml-1 text-xs font-semibold text-[#5C5C5C]">{unit}</span>}
                 </p>
               </div>
-              <Icon className="h-6 w-6 shrink-0 text-[#5C5C5C]" aria-hidden="true" />
+              <span className="stat-icon shrink-0" style={{ '--stat-accent': accent } as React.CSSProperties}>
+                <Icon className="h-5 w-5" aria-hidden="true" />
+              </span>
             </article>
-          ))}
+            );
+          })}
         </div>
         {canShowMargin && (
           <div className="rounded-[18px] border border-[#E2E2DF] bg-white px-4 py-3 text-xs text-[#5C5C5C]">
@@ -1464,22 +1473,22 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
         {/* CARD 1: Chiffre d'Affaires - BLEU */}
         <div 
           onClick={() => openHistoryModal('revenue')}
-          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
+          className="stat-card before:hidden flex min-h-[140px] cursor-pointer flex-col justify-between border-0 bg-gradient-to-br from-blue-600 to-blue-500 p-3.5 text-white shadow-lg shadow-blue-600/20 sm:min-h-[170px] sm:p-6"
         >
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">CA Jour</span>
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
-              <TrendingUp className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-blue-100 sm:text-[10px]">CA Jour</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15 sm:h-9 sm:w-9">
+              <TrendingUp className="h-4 w-4 text-white sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
+              <span className="truncate font-mono text-xl font-black leading-none tracking-tight text-white tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyRevenue.toFixed(3)}
               </span>
-              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-white sm:text-xs">{currency}</span>
             </div>
-            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-blue-100 sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1488,22 +1497,22 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
 
         {canShowMargin && <div
           onClick={() => openHistoryModal('profit')}
-          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
+          className="stat-card before:hidden flex min-h-[140px] cursor-pointer flex-col justify-between border-0 bg-gradient-to-br from-emerald-600 to-emerald-500 p-3.5 text-white shadow-lg shadow-emerald-600/20 sm:min-h-[170px] sm:p-6"
         >
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Bénéfice Net</span>
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
-              <Coins className="h-4 w-4 text-[#1B5E2B] sm:h-5 sm:w-5" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-emerald-100 sm:text-[10px]">Bénéfice Net</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15 sm:h-9 sm:w-9">
+              <Coins className="h-4 w-4 text-white sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className={cn('truncate font-display text-xl font-bold leading-none tracking-tight tabular-nums sm:text-[28px] lg:text-[30px]', dashboardData.dailyProfit === null ? 'text-[#0A0A0A]' : dashboardData.dailyProfit < 0 ? 'text-[#8A210A]' : 'text-[#1B5E2B]')}>
+              <span className={cn('truncate font-mono text-xl font-black leading-none tracking-tight tabular-nums sm:text-[28px] lg:text-[30px]', dashboardData.dailyProfit === null ? 'text-white' : 'text-white')}>
                 {dashboardData.dailyProfit === null ? '—' : dashboardData.dailyProfit.toFixed(3)}
               </span>
-              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-white sm:text-xs">{currency}</span>
             </div>
-            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-emerald-100 sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1513,22 +1522,22 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
         {/* CARD 3: Dépenses du Jour - ORANGE ANGLAIS */}
         <div 
           onClick={() => openHistoryModal('expenses')}
-          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:min-h-[170px] sm:p-6"
+          className="stat-card before:hidden flex min-h-[140px] cursor-pointer flex-col justify-between border-0 bg-gradient-to-br from-amber-500 to-orange-600 p-3.5 text-white shadow-lg shadow-orange-600/20 sm:min-h-[170px] sm:p-6"
         >
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Dépenses</span>
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
-              <PackagePlus className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-orange-100 sm:text-[10px]">Dépenses</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15 sm:h-9 sm:w-9">
+              <PackagePlus className="h-4 w-4 text-white sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
+              <span className="truncate font-mono text-xl font-black leading-none tracking-tight text-white tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyExpenses.toFixed(3)}
               </span>
-              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-white sm:text-xs">{currency}</span>
             </div>
-            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-orange-100 sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1538,22 +1547,22 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
         {/* CARD 4: Dettes - ROUGE */}
         <div 
           onClick={() => openHistoryModal('debt')}
-          className="flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#F6C9BE] bg-[#FBDDD5] p-3.5 transition-colors hover:bg-[#F6C9BE] sm:min-h-[170px] sm:p-6"
+          className="stat-card before:hidden flex min-h-[140px] cursor-pointer flex-col justify-between border-0 bg-gradient-to-br from-rose-600 to-pink-600 p-3.5 text-white shadow-lg shadow-rose-600/20 sm:min-h-[170px] sm:p-6"
         >
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#8A210A] sm:text-[10px]">Dettes</span>
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/70 sm:h-9 sm:w-9">
-              <AlertCircle className="h-4 w-4 text-[#B3261E] sm:h-5 sm:w-5" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-rose-100 sm:text-[10px]">Dettes</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15 sm:h-9 sm:w-9">
+              <AlertCircle className="h-4 w-4 text-white sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#8A210A] tabular-nums sm:text-[28px] lg:text-[30px]">
+              <span className="truncate font-mono text-xl font-black leading-none tracking-tight text-white tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.dailyDebt.toFixed(3)}
               </span>
-              <span className="shrink-0 text-[10px] font-black text-[#8A210A] sm:text-xs">{currency}</span>
+              <span className="shrink-0 text-[10px] font-black text-white sm:text-xs">{currency}</span>
             </div>
-            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#8A210A] sm:mt-2.5 sm:text-[9px]">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-rose-100 sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>
@@ -1563,22 +1572,22 @@ export default function Dashboard({ userProfile, cashSession }: DashboardProps) 
         {/* CARD 5: Nombre de ventes - VIOLET */}
         <div 
           onClick={() => openHistoryModal('sales')}
-          className="col-span-2 flex min-h-[140px] cursor-pointer flex-col justify-between overflow-hidden rounded-[22px] border border-[#E2E2DF] bg-white p-3.5 transition-colors hover:bg-[#F4F4F2] sm:col-span-1 sm:min-h-[170px] sm:p-6"
+          className="stat-card before:hidden col-span-2 flex min-h-[140px] cursor-pointer flex-col justify-between border-0 bg-gradient-to-br from-purple-600 via-fuchsia-600 to-violet-500 p-3.5 text-white shadow-lg shadow-purple-600/20 sm:col-span-2 sm:min-h-[170px] sm:p-6 xl:col-span-1"
         >
           <div className="flex items-center justify-between relative z-10 gap-1">
-            <span className="truncate text-[8px] font-black uppercase tracking-widest text-[#5C5C5C] sm:text-[10px]">Ventes</span>
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] sm:h-9 sm:w-9">
-              <ShoppingCart className="h-4 w-4 text-[#0A0A0A] sm:h-5 sm:w-5" />
+            <span className="truncate text-[8px] font-black uppercase tracking-widest text-purple-100 sm:text-[10px]">Ventes</span>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/15 sm:h-9 sm:w-9">
+              <ShoppingCart className="h-4 w-4 text-white sm:h-5 sm:w-5" />
             </div>
           </div>
           <div className="mt-3 sm:mt-4 relative z-10">
             <div className="flex items-baseline gap-1">
-              <span className="truncate font-display text-xl font-bold leading-none tracking-tight text-[#0A0A0A] tabular-nums sm:text-[28px] lg:text-[30px]">
+              <span className="truncate font-mono text-xl font-black leading-none tracking-tight text-white tabular-nums sm:text-[28px] lg:text-[30px]">
                 {dashboardData.todaySalesCount}
               </span>
-              <span className="shrink-0 text-[10px] font-black text-[#5C5C5C] sm:text-xs">ventes</span>
+              <span className="shrink-0 text-[10px] font-black text-white sm:text-xs">ventes</span>
             </div>
-            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-[#5C5C5C] sm:mt-2.5 sm:text-[9px]">
+            <p className="mt-1.5 flex items-center gap-1 text-[8px] font-bold text-purple-100 sm:mt-2.5 sm:text-[9px]">
               <Clock className="w-3 h-3 shrink-0" />
               <span className="truncate">Historique</span>
             </p>

@@ -283,7 +283,7 @@ function AccountPasswordCard() {
           <input type="password" autoComplete="new-password" required minLength={8} value={confirmation} onChange={event => setConfirmation(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium normal-case tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
         </label>
         {message && <p role={message.success ? 'status' : 'alert'} className={`rounded-xl border p-3 text-xs font-semibold ${message.success ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-700'}`}>{message.text}</p>}
-        <button type="submit" disabled={saving || !currentPassword || newPassword.length < 8 || newPassword !== confirmation} className="min-h-10 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="submit" disabled={saving || !currentPassword || newPassword.length < 8 || newPassword !== confirmation} className="min-h-10 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-100 disabled:text-indigo-400">
           {saving ? 'Modification…' : 'Changer mon mot de passe'}
         </button>
       </form>
@@ -396,8 +396,8 @@ export default function Settings({
     return (
       <div className="space-y-6 max-w-4xl mx-auto">
         <div>
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            <SettingsIcon className="w-7 h-7 text-indigo-600 fill-indigo-100/40" />
+          <h1 className="flex items-center gap-2 font-display text-3xl font-black tracking-tight text-slate-900">
+            <SettingsIcon className="h-8 w-8 text-indigo-600 fill-indigo-100/40" />
             Paramètres
           </h1>
           <p className="text-xs text-slate-500 font-medium">

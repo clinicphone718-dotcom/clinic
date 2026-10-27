@@ -32,7 +32,8 @@ import { cn } from './lib/utils';
 import type { UserProfile, Note, CashSession as CashSessionRecord } from './types';
 import { getPendingOperations, syncPendingOperations } from './lib/offlineManager';
 import { hasMenuAccess } from './lib/permissions';
-import { APP_LOGO_URL, APP_NAME, APP_TAGLINE } from './config/brand';
+import BrandLogo from './components/BrandLogo';
+import { APP_LOGO_URL, APP_NAME } from './config/brand';
 import { ALLOW_SELF_SIGNUP } from './config/firebase';
 import { useCashSession } from './lib/cashSessions';
 export { hasMenuAccess } from './lib/permissions';
@@ -63,13 +64,18 @@ const NAV_SECTIONS = [
     ],
   },
   {
-  title: 'GESTION',
-  items: [
-    { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
-    { id: 'startup', name: 'Coran & Adhkar', path: '/settings#startup-settings', icon: BookOpen, adminOnly: true },
-    { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
-    { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
-    { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
+    title: 'OUTILS',
+    items: [
+      { id: 'notes', name: 'Mémos & Notes', path: '/notes', icon: StickyNote },
+      { id: 'startup', name: 'Coran & Adhkar', path: '/settings#startup-settings', icon: BookOpen, adminOnly: true },
+    ],
+  },
+  {
+    title: 'ADMINISTRATION',
+    items: [
+      { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
+      { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
+      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
       { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
     ],
   },
@@ -230,36 +236,30 @@ function Sidebar({
       {/* Mobile Backdrop */}
       {isOpen && (
         <div 
-          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 lg:hidden transition-opacity duration-300"
+          className="fixed inset-0 z-40 bg-[#20263A]/25 backdrop-blur-sm transition-opacity duration-300 lg:hidden"
           onClick={() => setIsOpen(false)}
         />
       )}
       
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-1rem))] border-r border-[#2A2A2A] bg-[#0A0A0A] text-[#F0F0F0] shadow-xl shadow-black/20 transition-transform duration-300 lg:translate-x-0 lg:w-72 lg:shadow-none",
+        "fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-1rem))] border-r border-[#E6E9F2] bg-white text-[#20263A] shadow-xl shadow-[#20263A]/10 transition-transform duration-300 lg:translate-x-0 lg:w-72 lg:shadow-none",
         isOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         <div className="h-full flex flex-col">
-          <div className="flex items-center justify-between px-5 pt-7">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-white text-[#0A0A0A]">
-                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : <Wrench className="h-6 w-6" />}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate font-display text-[22px] font-bold leading-tight tracking-tight text-white">{APP_NAME}</p>
-                <p className="mt-0.5 truncate text-[10.5px] font-bold uppercase tracking-[0.14em] text-[#A3A3A3]">{APP_TAGLINE}</p>
-              </div>
+          <div className="flex items-center justify-between border-b border-[#E6E9F2] px-5 py-5">
+            <div className="min-w-0">
+              <BrandLogo variant="full" logoUrl={APP_LOGO_URL} />
             </div>
-            <button onClick={() => setIsOpen(false)} aria-label="Fermer le menu" className="ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#D4D4D4] transition-colors hover:bg-[#1C1C1C] lg:hidden">
+            <button onClick={() => setIsOpen(false)} aria-label="Fermer le menu" className="ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#5F667A] transition-colors hover:bg-[#F6F7FB] lg:hidden">
               <X className="h-5 w-5" />
             </button>
           </div>
 
-          <nav aria-label="Navigation principale" className="flex-1 space-y-1 overflow-y-auto px-[18px] py-6">
+          <nav aria-label="Navigation principale" className="flex-1 space-y-3 overflow-y-auto px-4 py-5">
             {navSections.map(section => (
               <section key={section.title} aria-label={section.title}>
-                <h2 className="px-[14px] pb-1 pt-4 text-[10.5px] font-bold uppercase tracking-[0.16em] text-[#8A8A8A]">{section.title}</h2>
-                <div className="space-y-[3px]">
+                <h2 className="px-3 pb-2 pt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-[#5F667A]">{section.title}</h2>
+                <div className="space-y-1">
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const isActive = item.path === '/settings#startup-settings'
@@ -271,19 +271,19 @@ function Sidebar({
                         to={item.path}
                         onClick={() => setIsOpen(false)}
                         className={cn(
-                          "relative flex min-h-12 items-center gap-[14px] rounded-[14px] px-4 py-2.5 text-[14.5px] font-semibold transition-colors duration-200 group",
+                                  "group relative flex min-h-11 items-center gap-3 rounded-2xl px-3 text-[13px] font-semibold transition-colors duration-160",
                           isActive
-                            ? "bg-white font-bold text-[#0A0A0A]"
-                            : "text-[#D4D4D4] hover:bg-[#1C1C1C]"
+                                    ? "bg-indigo-600 font-bold text-white shadow-md shadow-indigo-600/20"
+                                    : "text-[#64748B] hover:bg-indigo-50 hover:text-slate-900"
                         )}
                         aria-current={isActive ? 'page' : undefined}
                       >
-                        <Icon className="h-5 w-5 shrink-0" />
+                        <Icon className={cn("h-[18px] w-[18px] shrink-0", isActive ? "text-white" : "text-slate-400")} />
                         <span className="flex-1">{item.name}</span>
                         {item.id === 'notes' && todayNotesCount > 0 && (
                           <span className={cn(
                             "min-w-[18px] rounded-full px-2 py-0.5 text-center text-[10px] font-black",
-                            isActive ? "bg-[#0A0A0A] text-white" : "bg-[#B3261E] text-white"
+                            isActive ? "bg-white/20 text-white" : "bg-rose-50 text-rose-700"
                           )}>
                             {todayNotesCount}
                           </span>
@@ -297,49 +297,49 @@ function Sidebar({
           </nav>
 
           {/* PWA / Offline Status Cards in Sidebar */}
-          <div className="space-y-3 px-[18px] py-3">
-            <div className="flex flex-col gap-3 rounded-[18px] border border-[#2A2A2A] bg-[#141414] p-4">
+          <div className="space-y-3 px-4 py-3">
+            <div className="flex flex-col gap-3 rounded-2xl border border-[#E6E9F2] bg-[#F6F7FB] p-4">
               <div className="flex items-center gap-2.5">
-                <span className={cn("h-2.5 w-2.5 rounded-full", cashSession ? "bg-white" : "bg-[#8A8A8A]")} />
-                <span className="text-xs font-bold uppercase tracking-[0.08em] text-white">{cashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}</span>
+                <span className={cn("h-2.5 w-2.5 rounded-full", cashSession ? "bg-[#168568]" : "bg-[#A4AABC]")} />
+                <span className="text-xs font-bold uppercase tracking-[0.06em] text-[#20263A]">{cashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}</span>
               </div>
-              {cashSession && <p className="text-[13px] font-medium text-[#BDBDBD]">Session depuis {cashSession.openedAt?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) || '—'}, par {userProfile?.name || userProfile?.email || 'Utilisateur'}</p>}
-              <Link to="/cash-session" onClick={() => setIsOpen(false)} className="flex min-h-[46px] items-center justify-center rounded-xl border-2 border-white px-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-[#0A0A0A]">
+              {cashSession && <p className="text-[12px] font-medium text-[#5F667A]">Session depuis {cashSession.openedAt?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) || '—'}, par {userProfile?.name || userProfile?.email || 'Utilisateur'}</p>}
+              <Link to="/cash-session" onClick={() => setIsOpen(false)} className="flex min-h-11 items-center justify-center rounded-xl bg-[#5846E8] px-3 text-sm font-bold text-white transition-colors hover:bg-[#4937D3] focus-visible:outline-offset-2">
                 {cashSession ? 'Clôturer la caisse' : 'Ouvrir la caisse'}
               </Link>
             </div>
           </div>
 
-          <div className="border-t border-[#2A2A2A] px-[18px] py-3">
+          <div className="border-t border-[#E6E9F2] px-4 py-3">
             {/* Connection and Sync Status */}
             {!isOnline ? (
-              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-[#D4D4D4]">
-                <div className="mb-1 flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-white">
-                  <WifiOff className="h-3.5 w-3.5 animate-pulse text-white" />
+              <div className="rounded-xl border border-[#F2D9B6] bg-[#FFF6E9] p-3 text-xs text-[#67430F]">
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-[#67430F]">
+                  <WifiOff className="h-3.5 w-3.5 animate-pulse text-[#A96500]" />
                   Mode Hors-ligne
                 </div>
-                <p className="text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
+                <p className="text-[11px] font-medium leading-relaxed text-[#67430F]">
                   Modifications sauvegardées localement. {pendingCount > 0 ? `${pendingCount} opération(s) en attente.` : 'Prêt pour reconnexion.'}
                 </p>
               </div>
             ) : pendingCount > 0 ? (
-              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
+              <div className="rounded-xl border border-[#DCD8FF] bg-[#F3F1FF] p-3 text-xs text-[#4937D3]">
                 <div className="mb-1 flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
                   <span className="flex items-center gap-1.5">
-                    <RefreshCcw className={cn("h-3.5 w-3.5 text-white", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#5846E8]", syncing && "animate-spin")} />
                     Synchronisation
                   </span>
-                  <span className="rounded-full bg-white px-1.5 py-0.5 text-[9px] text-[#0A0A0A]">
+                  <span className="rounded-full bg-[#5846E8] px-1.5 py-0.5 text-[9px] text-white">
                     {pendingCount}
                   </span>
                 </div>
-                <p className="mb-2 text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
+                <p className="mb-2 text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Des modifications locales sont en attente d'envoi.
                 </p>
                 <button
                   disabled={syncing}
                   onClick={handleTriggerSync}
-                  className="min-h-11 w-full rounded-lg border border-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white transition-colors hover:bg-white hover:text-[#0A0A0A] disabled:opacity-50"
+                  className="min-h-11 w-full rounded-lg border border-[#5846E8] px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#5846E8] transition-colors hover:bg-[#5846E8] hover:text-white disabled:opacity-50"
                 >
                   {syncing ? 'En cours...' : 'Synchroniser maintenant'}
                 </button>
@@ -348,16 +348,16 @@ function Sidebar({
 
             {/* Install Prompt for Android / Desktop */}
             {deferredPrompt && (
-              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
-                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-white">
+              <div className="rounded-xl border border-[#E6E9F2] bg-white p-3 text-xs text-[#20263A]">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-[#20263A]">
                   ✨ Installer l'App
                 </div>
-                <p className="mb-2.5 text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
+                <p className="mb-2.5 text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Lancez {APP_NAME} en plein écran directement depuis votre écran d'accueil.
                 </p>
                 <button
                   onClick={handleInstallApp}
-                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#0A0A0A] transition-colors hover:bg-[#E2E2DF]"
+                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#5846E8] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white transition-colors hover:bg-[#4937D3]"
                 >
                   <Package className="w-3.5 h-3.5" />
                   Installer maintenant
@@ -367,25 +367,25 @@ function Sidebar({
 
             {/* Install Prompt Guide for iOS */}
             {isIOS && !isStandalone && (
-              <div className="rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3 text-xs text-white">
-                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-white">
+              <div className="rounded-xl border border-[#E6E9F2] bg-white p-3 text-xs text-[#20263A]">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-[#20263A]">
                   📲 Installer sur iPhone
                 </div>
-                <p className="text-[11px] font-medium leading-relaxed text-[#BDBDBD]">
+                <p className="text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Appuyez sur <span className="font-bold">Partager</span> (<span className="text-[13px]">⎋</span>) puis sur <span className="font-bold">"Sur l'écran d'accueil"</span> (<span className="text-[13px]">⊕</span>).
                 </p>
               </div>
             )}
           </div>
 
-          <div className="border-t border-[#2A2A2A] p-4">
+          <div className="border-t border-[#E6E9F2] p-4">
             <div className="mb-3 flex items-center gap-3 px-1.5 py-1">
-              <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#3A3A3A] font-display text-base font-bold text-white">
-                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : (userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
+              <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#F0EEFF] font-display text-base font-bold text-[#5846E8]">
+                {(userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold text-white">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
-                <p className="mt-0.5 text-xs font-medium text-[#A3A3A3]">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
+                <p className="truncate text-sm font-bold text-[#20263A]">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
+                <p className="mt-0.5 text-xs font-medium text-[#5F667A]">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
               </div>
             </div>
             <button
@@ -395,9 +395,9 @@ function Sidebar({
                 await signOut(auth);
                 window.location.reload();
               }}
-              className="flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-3 text-xs font-extrabold uppercase tracking-wider text-[#F0F0F0] transition-colors hover:bg-[#1C1C1C]"
+              className="flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-3 text-xs font-extrabold uppercase tracking-wider text-rose-600 transition-colors hover:bg-rose-50 hover:text-rose-700"
             >
-              <LogOut className="h-4 w-4 text-[#D4D4D4]" />
+              <LogOut className="h-4 w-4 text-[#7B8294]" />
               Déconnexion
             </button>
           </div>
@@ -826,7 +826,7 @@ export default function App() {
     <ErrorBoundary>
       <Router>
         <StartupProvider userProfile={userProfile} online={isOnline}>
-        <div className="flex min-h-screen bg-[#F4F4F2]" onClick={() => {
+        <div className="flex min-h-screen bg-[#F6F7FB]" onClick={() => {
           if (showNotesPopover) setShowNotesPopover(false);
         }}>
           <Sidebar 
@@ -845,32 +845,35 @@ export default function App() {
           />
           
           <main className="flex min-h-screen flex-1 flex-col lg:pl-72">
-            <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#2A2A2A] bg-[#0A0A0A] px-4 py-3 text-white lg:border-[#E2E2DF] lg:bg-[#F4F4F2] lg:px-10 lg:text-[#0A0A0A]">
+            <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#E6E9F2] bg-white px-4 py-3 text-[#1E293B] lg:px-8">
               <button 
                 onClick={() => setSidebarOpen(true)}
                 aria-label="Ouvrir le menu"
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#1C1C1C] text-white transition-colors hover:bg-[#2A2A2A] lg:hidden"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[#E6E9F2] bg-white text-[#64748B] transition-colors hover:bg-[#F8F9FD] lg:hidden"
               >
                 <Menu className="h-5 w-5" />
               </button>
-              <div className="min-w-0 flex-1 lg:hidden">
-                <p className="truncate font-display text-lg font-bold leading-tight tracking-tight">{APP_NAME}</p>
-                <p className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-white">
-                  <span className={cn("h-2 w-2 rounded-full", activeCashSession ? "bg-white" : "bg-[#8A8A8A]")} />
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 lg:hidden">
+                <BrandLogo variant="icon" logoUrl={APP_LOGO_URL} className="h-9 w-9 rounded-xl p-2" />
+                <div className="min-w-0">
+                  <p className="truncate bg-gradient-to-r from-indigo-600 to-cyan-500 bg-clip-text font-display text-[15px] font-extrabold leading-tight tracking-tight text-transparent">{APP_NAME}</p>
+                  <p className="flex items-center gap-1.5 text-[10px] font-semibold text-[#5F667A]">
+                  <span className={cn("h-2 w-2 rounded-full", activeCashSession ? "bg-[#168568]" : "bg-[#A4AABC]")} />
                   {activeCashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}
-                </p>
+                  </p>
+                </div>
               </div>
 
               {/* Online/Offline Status Indicator */}
               <div className="hidden items-center gap-2 lg:flex">
                 {isOnline ? (
-                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-[#0A0A0A] px-4 text-[11.5px] font-bold uppercase tracking-[0.1em] text-white">
-                    <span className="h-2 w-2 rounded-full bg-white" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-emerald-50 px-3.5 text-[11px] font-bold uppercase tracking-[0.08em] text-emerald-800">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-600" />
                     <span className="hidden sm:inline">En ligne</span>
                   </div>
                 ) : (
-                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-[#FBDDD5] px-4 text-[11.5px] font-bold uppercase tracking-[0.1em] text-[#8A210A]">
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-[#B3261E]" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-rose-50 px-3.5 text-[11px] font-bold uppercase tracking-[0.08em] text-rose-800">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-rose-600" />
                     <span>Hors ligne</span>
                   </div>
                 )}
@@ -882,12 +885,12 @@ export default function App() {
                     className={cn(
                       "flex min-h-10 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all",
                       isOnline
-                        ? "cursor-pointer border-[#E2E2DF] bg-white text-[#2A2A2A] hover:bg-[#F4F4F2]"
-                        : "cursor-not-allowed border-[#E2E2DF] bg-[#E2E2DF] text-[#5C5C5C]"
+                        ? "cursor-pointer border-[#E6E9F2] bg-white text-[#5F667A] hover:bg-[#F6F7FB]"
+                        : "cursor-not-allowed border-[#E6E9F2] bg-[#F6F7FB] text-[#5F667A]"
                     )}
                     title={isOnline ? "Des opérations sont en attente de synchronisation. Cliquez pour synchroniser." : "Les opérations seront synchronisées dès le retour de la connexion."}
                   >
-                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#3A3A3A]", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#5846E8]", syncing && "animate-spin")} />
                     <span>{pendingCount} en attente</span>
                   </button>
                 )}
@@ -895,8 +898,8 @@ export default function App() {
               
               {/* Interactive Date & Notes Notification Badge widget */}
               <div className="relative ml-auto flex items-center gap-2 lg:ml-4 lg:gap-3.5" onClick={(e) => e.stopPropagation()}>
-                <div className="hidden min-h-10 items-center gap-2 rounded-full border border-[#E2E2DF] bg-white px-4 text-[13.5px] font-semibold lg:flex">
-                  <Calendar className="h-4 w-4 text-[#3A3A3A]" />
+                <div className="hidden min-h-10 items-center gap-2 rounded-full border border-[#E6E9F2] bg-white px-3.5 font-mono text-[11px] font-medium text-[#64748B] lg:flex">
+                  <Calendar className="h-4 w-4 text-[#5846E8]" />
                   <span>{getFormattedDate()}</span>
                 </div>
 
@@ -907,34 +910,34 @@ export default function App() {
                     className={cn(
                       "relative flex h-11 w-11 items-center justify-center rounded-full border transition-colors duration-300",
                       headerNotificationCount > 0
-                        ? "border-[#E2E2DF] bg-white text-[#0A0A0A] hover:bg-[#F4F4F2] lg:border-[#E2E2DF]"
-                        : "border-[#2A2A2A] bg-[#1C1C1C] text-white hover:bg-[#2A2A2A] lg:border-[#E2E2DF] lg:bg-white lg:text-[#0A0A0A] lg:hover:bg-[#F4F4F2]"
+                        ? "border-[#E6E9F2] bg-white text-[#20263A] hover:bg-[#F6F7FB]"
+                        : "border-[#E6E9F2] bg-white text-[#5F667A] hover:bg-[#F6F7FB]"
                     )}
                     title={headerNotificationCount > 0 ? `${headerNotificationCount} notification(s)` : "Aucune notification"}
                     aria-label={`Notifications${headerNotificationCount ? ` (${headerNotificationCount})` : ''}`}
                   >
-                    <Bell className="h-[19px] w-[19px]" />
+                    <Bell className="h-[18px] w-[18px]" />
                     {headerNotificationCount > 0 && (
-                      <span className="absolute right-1 top-1 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#B3261E] px-1 text-[10px] font-bold text-white">
+                      <span className="absolute right-1 top-1 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#D94B55] px-1 text-[10px] font-bold text-white">
                         {headerNotificationCount}
                       </span>
                     )}
                   </button>
 
                   {showNotesPopover && (
-                    <div className="absolute left-0 mt-2.5 w-76 sm:w-80 bg-white border border-slate-100 rounded-2xl shadow-xl z-50 p-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                      <div className="flex items-center justify-between border-b border-slate-50 pb-2.5 mb-2.5">
-                        <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                          <Bell className="w-4 h-4 text-indigo-500" />
+                    <div className="absolute left-0 z-50 mt-2.5 w-76 rounded-2xl border border-[#E6E9F2] bg-white p-4 shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 sm:w-80">
+                      <div className="mb-2.5 flex items-center justify-between border-b border-[#E6E9F2] pb-2.5">
+                        <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#20263A]">
+                          <Bell className="h-4 w-4 text-[#5846E8]" />
                           Notifications
                         </span>
-                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md text-slate-500 bg-slate-50 border border-slate-100">
+                        <span className="rounded-md border border-[#E6E9F2] bg-[#F6F7FB] px-2 py-0.5 text-[10px] font-black uppercase text-[#5F667A]">
                           {headerNotificationCount} active{headerNotificationCount > 1 ? 's' : ''}
                         </span>
                       </div>
 
                       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {headerNotificationError && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-[10px] font-semibold text-rose-700">{headerNotificationError}</p>}
+                        {headerNotificationError && <p role="alert" className="rounded-lg bg-[#FCEAEC] p-2 text-[10px] font-semibold text-[#992C36]">{headerNotificationError}</p>}
                         {headerNotificationItems.map(item => (
                           <Link key={item.id} to={item.path} onClick={() => setShowNotesPopover(false)}
                             className={cn("flex items-center justify-between gap-3 rounded-xl p-2.5 text-xs font-semibold hover:opacity-85", item.color)}>
@@ -943,30 +946,30 @@ export default function App() {
                           </Link>
                         ))}
                         {hasMenuAccess(userProfile, 'notes') && (
-                          <div className="border-t border-slate-100 pt-2">
-                            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600"><StickyNote className="h-3.5 w-3.5 text-indigo-500" /> Mémos d’aujourd’hui</p>
-                            {todayNotes.length === 0 ? <p className="px-1 text-[10px] text-slate-400">Aucun mémo pour aujourd’hui.</p> : todayNotes.map(note => (
-                              <div key={note.id} className="mb-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-                                <p className="text-xs font-extrabold text-slate-800">{note.title}</p>
-                                <p className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-slate-500">{note.content}</p>
+                          <div className="border-t border-[#E6E9F2] pt-2">
+                            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-[#5F667A]"><StickyNote className="h-3.5 w-3.5 text-[#5846E8]" /> Mémos d’aujourd’hui</p>
+                            {todayNotes.length === 0 ? <p className="px-1 text-[10px] text-[#5F667A]">Aucun mémo pour aujourd’hui.</p> : todayNotes.map(note => (
+                              <div key={note.id} className="mb-2 rounded-xl border border-[#E6E9F2] bg-[#F6F7FB] p-2.5">
+                                <p className="text-xs font-extrabold text-[#20263A]">{note.title}</p>
+                                <p className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-[#5F667A]">{note.content}</p>
                               </div>
                             ))}
                           </div>
                         )}
                         {headerNotificationItems.length === 0 && todayNotes.length === 0 && !headerNotificationError ? (
-                          <div className="text-center py-4 text-slate-400">
-                            <CheckCircle className="w-7 h-7 text-emerald-400 mx-auto mb-1.5" />
-                            <p className="text-[10px] font-[900] uppercase tracking-wide text-slate-500">Tout est en ordre</p>
-                            <p className="text-[9px] font-semibold text-slate-400 mt-0.5">Aucune notification à traiter.</p>
+                          <div className="py-4 text-center text-[#5F667A]">
+                            <CheckCircle className="mx-auto mb-1.5 h-7 w-7 text-[#168568]" />
+                            <p className="text-[10px] font-[900] uppercase tracking-wide text-[#5F667A]">Tout est en ordre</p>
+                            <p className="mt-0.5 text-[9px] font-semibold text-[#5F667A]">Aucune notification à traiter.</p>
                           </div>
                         ) : null}
                       </div>
 
-                      {hasMenuAccess(userProfile, 'notes') && <div className="border-t border-slate-50 mt-3 pt-2.5 text-center">
+                      {hasMenuAccess(userProfile, 'notes') && <div className="mt-3 border-t border-[#E6E9F2] pt-2.5 text-center">
                         <Link
                           to="/notes"
                           onClick={() => setShowNotesPopover(false)}
-                          className="inline-flex items-center justify-center w-full py-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-700 hover:to-indigo-600 text-white text-[10px] uppercase tracking-wider font-extrabold rounded-xl transition-all shadow-md shadow-indigo-600/10"
+                          className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-[#5846E8] py-2 text-[10px] font-extrabold uppercase tracking-wider text-white transition-colors hover:bg-[#4937D3]"
                         >
                           Gérer tous les mémos
                         </Link>
@@ -980,17 +983,28 @@ export default function App() {
                     aria-label="Notifications"
                     title="Notifications"
                     disabled
-                    className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full border border-[#2A2A2A] bg-[#1C1C1C] text-white lg:border-[#E2E2DF] lg:bg-white lg:text-[#5C5C5C]"
+                    className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full border border-[#E6E9F2] bg-white text-[#5F667A]"
                   >
                     <Bell className="w-4 h-4" />
                   </button>
                 )}
               </div>
 
-              <div className="hidden items-center gap-3 lg:flex">
-                <span className="max-w-64 truncate rounded-full border border-[#E2E2DF] bg-white px-[18px] py-2 text-[13.5px] font-semibold">{user.email}</span>
-                <div className="flex h-[34px] w-[34px] items-center justify-center overflow-hidden rounded-full bg-[#3A3A3A] text-sm font-bold text-white">
-                  {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt={APP_NAME} className="h-full w-full rounded-xl object-cover" /> : user.email?.[0].toUpperCase()}
+              {hasMenuAccess(userProfile, 'pos') && (
+                <Link
+                  to="/pos"
+                  aria-label="Ouvrir la caisse"
+                  title="Ouvrir la caisse"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 transition-colors hover:bg-indigo-700"
+                >
+                  <CircleDollarSign className="h-5 w-5" />
+                </Link>
+              )}
+
+              <div className="hidden items-center gap-2.5 lg:flex">
+                <span className="max-w-56 truncate text-[12px] font-medium text-[#5F667A]">{user.email}</span>
+                <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-[#F0EEFF] text-sm font-bold text-[#5846E8]">
+                  {(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}
                 </div>
               </div>
             </header>

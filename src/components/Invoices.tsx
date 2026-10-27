@@ -1045,12 +1045,12 @@ export default function Invoices({ userProfile }: InvoicesProps) {
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Facturation</h1>
+          <h1 className="font-display text-3xl font-black tracking-tight text-slate-900">Facturation</h1>
           <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mt-0.5">Factures de vente et achats du magasin</p>
         </div>
         {activeTab === 'sales' && <button
           onClick={() => setIsNewInvoiceModalOpen(true)}
-          className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all duration-350 shadow-lg shadow-emerald-600/15 group hover:-translate-y-0.5"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/15 transition-all duration-350 group hover:-translate-y-0.5 hover:bg-emerald-700 sm:w-auto"
         >
           <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
           Nouvelle Facture
@@ -1064,7 +1064,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
             setPurchaseNumber(`ACH-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`);
             setIsPurchaseModalOpen(true);
           }}
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/15 transition-all hover:bg-emerald-700"
+          className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/15 transition-all hover:bg-emerald-700 sm:w-auto"
         >
           <Plus className="h-4 w-4" /> Nouvelle facture d'achat
         </button>}
@@ -1075,11 +1075,11 @@ export default function Invoices({ userProfile }: InvoicesProps) {
         <div className="flex flex-col gap-4 border-b border-slate-100 bg-slate-50/20 p-5">
           <div className="flex flex-wrap gap-2" role="tablist" aria-label="Type de factures">
             <button type="button" role="tab" aria-selected={activeTab === 'sales'} onClick={() => setActiveTab('sales')}
-              className={`min-h-10 rounded-xl px-4 text-sm font-bold ${activeTab === 'sales' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+              className={`min-h-10 rounded-2xl px-4 text-sm font-bold ${activeTab === 'sales' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'border border-slate-200 bg-white text-slate-600'}`}>
               Factures de vente
             </button>
             <button type="button" role="tab" aria-selected={activeTab === 'purchases'} onClick={() => setActiveTab('purchases')}
-              className={`min-h-10 rounded-xl px-4 text-sm font-bold ${activeTab === 'purchases' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+              className={`min-h-10 rounded-2xl px-4 text-sm font-bold ${activeTab === 'purchases' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20' : 'border border-slate-200 bg-white text-slate-600'}`}>
               Factures d’achat
             </button>
           </div>
@@ -1091,7 +1091,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
               placeholder={activeTab === 'sales' ? 'Rechercher par numéro ou client...' : 'Rechercher par numéro ou fournisseur...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl focus:bg-white text-xs font-semibold text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all duration-300"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-2.5 pl-11 pr-4 text-xs font-semibold text-slate-700 outline-none transition-all duration-300 placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white focus:ring-2 focus:ring-indigo-500/10"
             />
           </div>
           <label className="flex items-center gap-2 text-xs font-bold text-slate-600">

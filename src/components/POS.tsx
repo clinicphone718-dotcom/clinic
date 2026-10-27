@@ -800,7 +800,7 @@ export default function POS({ userProfile }: POSProps) {
 
   return (
     <div className="space-y-4 pb-4">
-      <h1 className="font-display text-[34px] font-bold leading-tight tracking-tight text-[#0A0A0A] lg:text-[52px]">Vente</h1>
+      <h1 className="font-display text-[34px] font-extrabold leading-tight tracking-tight text-slate-900 lg:text-[52px]">Vente</h1>
       <div className="relative grid min-h-0 grid-cols-1 gap-4 lg:h-[calc(100vh-210px)] lg:grid-cols-12">
       {!cashSession && (
         <div className="order-0 flex items-center justify-between gap-3 rounded-[18px] border border-[#F6C9BE] bg-[#FBDDD5] p-3 text-sm text-[#8A210A] lg:col-span-12">
@@ -837,17 +837,17 @@ export default function POS({ userProfile }: POSProps) {
       {/* Left: Product Selection (Compact Sidebar) */}
       <div className="order-2 lg:order-1 lg:col-span-4 flex flex-col gap-2.5 min-h-0 h-full">
         {/* Top Controls Box (Highly Compact) */}
-        <div className="space-y-2 rounded-[20px] border border-[#E2E2DF] bg-white p-3">
+        <div className="space-y-2 rounded-[20px] border border-slate-800 bg-white p-3">
           {/* Barcode automatic scan status and manual input */}
-          <div className="relative flex flex-col gap-1.5 rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] p-2">
+          <div className="relative flex flex-col gap-1.5 rounded-xl border border-slate-100 bg-slate-50 p-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <div className="relative flex items-center justify-center">
-                  <Barcode className={cn("h-4 w-4 text-[#0A0A0A]", scannerActive && "animate-pulse")} />
-                  {scannerActive && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[#5C5C5C]" />}
+                  <Barcode className={cn("h-4 w-4 text-emerald-600", scannerActive && "animate-pulse")} />
+                  {scannerActive && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500" />}
                 </div>
                 <div className="flex flex-col leading-tight">
-                  <span className="text-[9px] font-black uppercase tracking-wider text-[#0A0A0A]">Lecteur Code à Barre</span>
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-800">Lecteur Code à Barre</span>
                 </div>
               </div>
               <button
@@ -855,8 +855,8 @@ export default function POS({ userProfile }: POSProps) {
                 className={cn(
                   "min-h-11 rounded-full border px-3 text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer",
                   scannerActive
-                    ? "bg-[#0A0A0A] text-white border-[#0A0A0A]"
-                    : "bg-white text-[#5C5C5C] border-[#E2E2DF]"
+                    ? "bg-emerald-600 text-white border-emerald-600"
+                    : "bg-white text-slate-500 border-slate-200"
                 )}
               >
                 {scannerActive ? "Actif" : "Inactif"}
@@ -864,10 +864,10 @@ export default function POS({ userProfile }: POSProps) {
             </div>
 
             {scannerActive && (
-              <div className="mt-0.5 flex flex-col gap-1 rounded-lg border border-[#E2E2DF] bg-white p-1.5">
+              <div className="mt-0.5 flex flex-col gap-1 rounded-lg border border-emerald-100 bg-emerald-50/70 p-1.5">
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
-                    <Barcode className="h-3.5 w-3.5 text-[#5C5C5C]" />
+                    <Barcode className="h-3.5 w-3.5 text-emerald-600" />
                   </div>
                   <input
                     type="text"
@@ -904,7 +904,7 @@ export default function POS({ userProfile }: POSProps) {
                         e.stopPropagation();
                       }
                     }}
-                    className="block w-full rounded-lg border border-[#E2E2DF] bg-white py-2 pl-7 pr-2 font-mono text-[10px] font-bold tracking-wider text-[#0A0A0A] placeholder:text-[#5C5C5C] focus:border-[#0A0A0A] focus:outline-none focus:ring-2 focus:ring-[#0A0A0A]/10"
+                    className="block w-full rounded-lg border border-emerald-200 bg-white py-2 pl-7 pr-2 font-mono text-[10px] font-bold tracking-wider text-emerald-700 placeholder:text-emerald-600/70 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/10"
                   />
                 </div>
               </div>
@@ -913,14 +913,14 @@ export default function POS({ userProfile }: POSProps) {
 
           {/* Search bar */}
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5C5C5C]" />
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               placeholder="Rechercher nom ou code barre..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={handleSearchKeyDown}
-              className="w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] py-2 pl-8 pr-3 text-xs font-semibold text-[#0A0A0A] outline-none transition-all focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 text-xs font-semibold text-slate-800 outline-none transition-all focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10"
             />
           </div>
 
@@ -931,8 +931,8 @@ export default function POS({ userProfile }: POSProps) {
               className={cn(
                 "min-h-11 whitespace-nowrap rounded-full border px-4 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
                 selectedCategory === 'all' 
-                  ? "bg-[#0A0A0A] text-white border-[#0A0A0A]"
-                  : "bg-white text-[#5C5C5C] border-[#E2E2DF] hover:border-[#0A0A0A] hover:text-[#0A0A0A]"
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/20"
+                  : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
               )}
             >
               Tous
@@ -944,8 +944,8 @@ export default function POS({ userProfile }: POSProps) {
                 className={cn(
                   "min-h-11 whitespace-nowrap rounded-full border px-4 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
                   selectedCategory === cat.name
-                    ? "bg-[#0A0A0A] text-white border-[#0A0A0A]"
-                    : "bg-white text-[#5C5C5C] border-[#E2E2DF] hover:border-[#0A0A0A] hover:text-[#0A0A0A]"
+                    ? "bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/20"
+                    : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
                 )}
               >
                 {cat.name}
@@ -962,50 +962,50 @@ export default function POS({ userProfile }: POSProps) {
               onClick={() => addToCart(product)}
               disabled={product.inventoryType !== 'service' && product.stock <= 0}
               className={cn(
-                "group relative flex h-[110px] w-full min-w-0 cursor-pointer flex-col justify-between overflow-hidden rounded-[18px] border border-[#E2E2DF] bg-white text-left transition-colors",
-                "hover:bg-[#F4F4F2] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0A0A0A] active:scale-[0.99]",
+                "group relative flex h-[110px] w-full min-w-0 cursor-pointer flex-col justify-between overflow-hidden rounded-[18px] border border-slate-100 bg-white text-left shadow-sm transition-colors",
+                "hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 active:scale-[0.99]",
                 product.inventoryType !== 'service' && product.stock <= 0 && "opacity-60 grayscale cursor-not-allowed"
               )}
             >
-              <div className="absolute inset-x-0 top-0 h-0.5 bg-[#0A0A0A] opacity-70 transition-opacity group-hover:opacity-100"></div>
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-fuchsia-500 to-indigo-500 opacity-80 transition-opacity group-hover:opacity-100"></div>
 
               <div className="w-full flex justify-between items-center gap-1 px-2 pt-2">
-                <span className="flex max-w-[60%] items-center gap-1 truncate text-[7px] font-black uppercase tracking-wider text-[#5C5C5C]">
+                <span className="flex max-w-[60%] items-center gap-1 truncate text-[7px] font-black uppercase tracking-wider text-slate-400">
                   <span className={cn(
-                    "h-1.5 w-1.5 shrink-0 rounded-full bg-[#5C5C5C]"
+                    "h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500"
                   )}></span>
                   {product.category}
                 </span>
                 {topSellerIds.has(product.id) ? (
-                  <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-[#F4F4F2] px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wider text-[#0A0A0A]">
+                  <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wider text-white">
                     <Flame className="w-2.5 h-2.5" /> Top
                   </span>
                 ) : (salesQtyMap[product.id] || 0) > 0 ? (
-                  <span className="shrink-0 text-[7px] font-black uppercase tracking-wider text-[#5C5C5C]">
+                  <span className="shrink-0 text-[7px] font-black uppercase tracking-wider text-slate-400">
                     {salesQtyMap[product.id]} vendus
                   </span>
                 ) : null}
               </div>
 
               <div className="flex-1 flex items-center px-2 py-0.5 min-w-0 w-full">
-                <h3 className="w-full overflow-hidden break-words text-ellipsis text-[11px] font-bold leading-tight text-[#0A0A0A] line-clamp-2">
+                <h3 className="w-full overflow-hidden break-words text-ellipsis text-[11px] font-bold leading-tight text-slate-800 line-clamp-2">
                   {product.name}
                 </h3>
               </div>
 
               <div className="w-full px-2 pb-2 flex items-center justify-between gap-1 mt-auto">
                 <div className="min-w-0">
-                  <span className="block truncate font-display text-[12px] font-bold leading-none text-[#0A0A0A] tabular-nums">
+                  <span className="block truncate font-mono text-[12px] font-bold leading-none text-indigo-700 tabular-nums">
                     {product.sellPrice.toFixed(3)} <span className="text-[8px] font-bold">{currency}</span>
                   </span>
                   {product.inventoryType === 'service' ? <span className="text-[7px] font-black uppercase tracking-wider text-[#5C5C5C]">Service</span> : <span className={cn(
                     "text-[7px] font-black uppercase tracking-wider",
-                    product.stock <= 5 ? "text-[#8A210A]" : "text-[#5C5C5C]"
+                    product.stock <= 5 ? "text-rose-600" : "text-slate-500"
                   )}>
                     Stock {product.stock}
                   </span>}
                 </div>
-                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] text-[#0A0A0A] transition-colors group-hover:bg-[#0A0A0A] group-hover:text-white">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 transition-colors group-hover:bg-indigo-600 group-hover:text-white">
                   <Plus className="w-3.5 h-3.5" />
                 </div>
               </div>
@@ -1233,12 +1233,12 @@ export default function POS({ userProfile }: POSProps) {
             </div>
 
             {/* Card 3: Remise Appliquée avec champ d'écriture directe (Sleek) */}
-            <div className="flex flex-col justify-between rounded-xl border border-[#E2E2DF] bg-white p-2">
+            <div className="flex flex-col justify-between rounded-xl border border-amber-200 bg-amber-50 p-2">
               <div className="flex items-center justify-between">
-                <span className="text-[8px] font-black uppercase tracking-wider text-[#5C5C5C]">Remise (DT)</span>
-                <Percent className="h-3 w-3 shrink-0 text-[#5C5C5C]" />
+                <span className="text-[8px] font-black uppercase tracking-wider text-amber-800">Remise (DT)</span>
+                <Percent className="h-3 w-3 shrink-0 text-amber-600" />
               </div>
-              <div className="mt-0.5 flex items-center gap-1 rounded-md border border-[#E2E2DF] bg-[#F4F4F2] p-0.5">
+              <div className="mt-0.5 flex items-center gap-1 rounded-md border border-amber-200 bg-white p-0.5">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1263,7 +1263,7 @@ export default function POS({ userProfile }: POSProps) {
                     }
                   }}
                   placeholder="0.000"
-                  className="w-full bg-transparent px-1 text-right font-mono text-[10px] font-black text-[#0A0A0A] focus:outline-none"
+                  className="w-full bg-transparent px-1 text-right font-mono text-[10px] font-black text-amber-900 focus:outline-none"
                 />
               </div>
               {/* Presets remise super compacts */}
@@ -1271,65 +1271,65 @@ export default function POS({ userProfile }: POSProps) {
                 <button 
                   type="button"
                   onClick={() => { setDiscount(0); setDiscountInput('0'); }}
-                  className="min-h-11 rounded-full border border-[#E2E2DF] bg-white px-3 text-[7px] font-bold text-[#5C5C5C] cursor-pointer hover:bg-[#F4F4F2]"
+                  className="min-h-11 rounded-full border border-amber-300 bg-white px-3 text-[7px] font-bold text-amber-900 cursor-pointer hover:bg-amber-100"
                 >
                   Clear
                 </button>
                 <button 
                   type="button"
                   onClick={() => { setDiscount(5); setDiscountInput('5.000'); }}
-                  className="min-h-11 rounded-full bg-[#0A0A0A] px-3 text-[7px] font-black text-white cursor-pointer hover:bg-[#2A2A2A]"
+                  className="min-h-11 rounded-full bg-amber-600 px-3 text-[7px] font-black text-white cursor-pointer hover:bg-amber-700"
                 >
                   -5DT
                 </button>
                 <button 
                   type="button"
                   onClick={() => { setDiscount(10); setDiscountInput('10.000'); }}
-                  className="min-h-11 rounded-full bg-[#0A0A0A] px-3 text-[7px] font-black text-white cursor-pointer hover:bg-[#2A2A2A]"
+                  className="min-h-11 rounded-full bg-amber-600 px-3 text-[7px] font-black text-white cursor-pointer hover:bg-amber-700"
                 >
                   -10DT
                 </button>
               </div>
             </div>
 
-            {canViewMargin && <div className="flex items-center justify-between rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] p-2">
+            {canViewMargin && <div className="flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50 p-2">
               <div className="min-w-0">
                 <span className="block text-[8px] font-black uppercase tracking-wider text-[#5C5C5C]">Bénéfice estimé</span>
                 <span className={cn(
                   "text-xs sm:text-sm font-black font-mono block leading-none mt-1 truncate",
-                  estimatedBenefit < 0 ? "text-[#8A210A]" : "text-[#1B5E2B]",
+                  estimatedBenefit < 0 ? "text-rose-700" : "text-emerald-800",
                 )}>
                   {estimatedBenefit.toFixed(3)} <span className={cn(
                     "text-[8px] font-bold",
-                    estimatedBenefit < 0 ? "text-[#8A210A]" : "text-[#1B5E2B]",
+                    estimatedBenefit < 0 ? "text-rose-700" : "text-emerald-800",
                   )}>{currency}</span>
                 </span>
               </div>
-              <div className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[#1B5E2B]">
+              <div className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                 <TrendingUp className="h-3 w-3" />
               </div>
             </div>}
           </div>
 
           {/* Bottom Checkout Zone (Always Visible & Split for Wide Screens) */}
-          <div className="space-y-3 rounded-b-[24px] border-t border-[#2A2A2A] bg-[#141414] p-3.5">
+          <div className="space-y-3 rounded-b-[24px] border-t border-slate-800 bg-slate-900 p-3.5">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
               
               {/* Left Column: Total Net & Real-time Change Calculator */}
-              <div className="md:col-span-6 flex flex-col justify-between gap-2.5 rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-3">
+              <div className="md:col-span-6 flex flex-col justify-between gap-2.5 rounded-xl border border-slate-800 bg-slate-900 p-3">
                 {/* GIANT DOCK FOR NET TOTAL */}
                 <div className="flex flex-col gap-1 text-center animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between border-b border-[#3A3A3A] pb-1 text-[9px] font-black uppercase tracking-widest text-[#D0D0D0]">
+                  <div className="flex items-center justify-between border-b border-slate-700 pb-1 text-[9px] font-black uppercase tracking-widest text-indigo-200">
                     <span>Total Net à payer</span>
-                    <span className="rounded-full border border-[#3A3A3A] bg-[#2A2A2A] px-2 py-1 text-[8px] text-[#D0D0D0]">
+                    <span className="rounded-full border border-indigo-400/20 bg-indigo-500/15 px-2 py-1 text-[8px] text-indigo-200">
                       {storeSettings?.tvaEnabled === true ? `TVA (${storeSettings.tva || 0}%)` : 'Hors taxe'}
                     </span>
                   </div>
                   <div className="flex justify-center items-center gap-1 mt-1.5">
-                    <span className="select-all font-display text-3xl font-bold leading-none tracking-tighter text-white tabular-nums sm:text-4xl">
+                    <span className="select-all font-mono text-3xl font-bold leading-none tracking-tighter text-white tabular-nums sm:text-4xl">
                       {cartTotal.toFixed(3)}
                     </span>
-                    <span className="ml-1 text-sm font-black uppercase tracking-wider text-[#B8B8B8]">
+                    <span className="ml-1 text-sm font-black uppercase tracking-wider text-indigo-300">
                       {currency}
                     </span>
                   </div>
@@ -1340,10 +1340,10 @@ export default function POS({ userProfile }: POSProps) {
                   <div className={cn(
                     "mt-1 flex items-center justify-between rounded-lg border p-2 text-xs font-bold leading-none transition-all",
                     receivedCash > cartTotal
-                      ? "bg-[#2A2A2A] border-[#3A3A3A] text-white"
+                      ? "bg-emerald-900/40 border-emerald-700/50 text-emerald-100"
                       : receivedCash < cartTotal
                         ? "bg-[#FBDDD5] border-[#F6C9BE] text-[#8A210A]"
-                        : "bg-[#2A2A2A] border-[#3A3A3A] text-white"
+                        : "bg-emerald-900/40 border-emerald-700/50 text-emerald-100"
                   )}>
                     <div className="flex items-center gap-1 opacity-90">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -1369,8 +1369,8 @@ export default function POS({ userProfile }: POSProps) {
               {/* Right Column: Cash Received Input & Big Validation Button */}
               <div className="md:col-span-6 flex flex-col justify-between gap-2">
                 {/* HIGH CONTRAST RECEIVED AMOUNT INPUT */}
-                <div className="flex flex-col gap-1 rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] p-2">
-                  <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider text-[#D0D0D0]">
+                <div className="flex flex-col gap-1 rounded-xl border border-slate-800 bg-slate-800/80 p-2">
+                  <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider text-emerald-300">
                     <span>Montant Reçu</span>
                     <button 
                       type="button"
@@ -1378,13 +1378,13 @@ export default function POS({ userProfile }: POSProps) {
                         setReceivedCash(cartTotal);
                         setReceivedCashInput(cartTotal.toFixed(3));
                       }}
-                      className="min-h-11 rounded-full border border-[#3A3A3A] bg-[#2A2A2A] px-3 text-[8px] font-black uppercase tracking-widest text-white transition-colors cursor-pointer hover:bg-[#3A3A3A]"
+                      className="min-h-11 rounded-full border border-emerald-600 bg-emerald-600 px-3 text-[8px] font-black uppercase tracking-widest text-white transition-colors cursor-pointer hover:bg-emerald-700"
                     >
                       Tout Payer
                     </button>
                   </div>
-                  <div className="flex items-center justify-between border-b border-[#3A3A3A] pb-1">
-                    <CreditCard className="mr-1.5 h-4 w-4 shrink-0 text-[#B8B8B8]" />
+                  <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                    <CreditCard className="mr-1.5 h-4 w-4 shrink-0 text-emerald-400" />
                     <input
                       type="text"
                       inputMode="decimal"
@@ -1420,9 +1420,9 @@ export default function POS({ userProfile }: POSProps) {
                         }
                       }}
                       placeholder="0.000"
-                      className="w-full select-all bg-transparent p-0 text-right font-display text-lg font-bold tabular-nums text-white focus:outline-none focus:ring-0"
+                      className="w-full select-all bg-transparent p-0 text-right font-mono text-lg font-bold tabular-nums text-emerald-300 focus:outline-none focus:ring-0"
                     />
-                    <span className="ml-1 shrink-0 text-xs font-black text-[#B8B8B8]">{currency}</span>
+                    <span className="ml-1 shrink-0 text-xs font-black text-emerald-300">{currency}</span>
                   </div>
                   {/* Presets de paiement rapide */}
                   <div className="flex gap-1 overflow-x-auto no-scrollbar justify-end">
@@ -1437,7 +1437,7 @@ export default function POS({ userProfile }: POSProps) {
                             return updated;
                           });
                         }}
-                        className="min-h-11 shrink-0 rounded-full border border-[#3A3A3A] bg-[#2A2A2A] px-3 text-[8px] font-black text-white cursor-pointer hover:bg-[#3A3A3A]"
+                        className="min-h-11 shrink-0 rounded-full border border-slate-700 bg-slate-700 px-3 text-[8px] font-black text-slate-100 cursor-pointer hover:bg-slate-600"
                       >
                         +{val} DT
                       </button>
@@ -1450,7 +1450,7 @@ export default function POS({ userProfile }: POSProps) {
                   <button
                     onClick={() => validateSale(false)}
                     disabled={cart.length === 0 || isProcessing}
-                    className="flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full bg-white px-4 text-xs font-black uppercase tracking-wider text-[#0A0A0A] transition-colors hover:bg-[#E2E2DF] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-4 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/20 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {isProcessing ? 'Traitement...' : (
                       <>
@@ -1473,7 +1473,7 @@ export default function POS({ userProfile }: POSProps) {
                     }}
                     disabled={cart.length === 0 || isProcessing}
                     title="Enregistrer la vente en crédit (client requis)"
-                    className="min-h-11 cursor-pointer rounded-full border border-[#3A3A3A] bg-[#1C1C1C] px-4 text-xs font-black uppercase tracking-wider text-white transition-colors hover:bg-[#2A2A2A] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="min-h-11 cursor-pointer rounded-full bg-amber-500 px-4 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <CreditCard className="w-4 h-4 shrink-0" />
                     Crédité

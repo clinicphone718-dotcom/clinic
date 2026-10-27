@@ -94,10 +94,10 @@ function pdfApiPlugin(environment: Record<string, string>): Plugin {
 
 function salesBuildPlugin(environment: Record<string, string>): Plugin {
   const brand = {
-    name: environment.VITE_APP_NAME?.trim() || 'Phone Clinic',
-    shortName: environment.VITE_APP_SHORT_NAME?.trim() || 'Phone Clinic',
-    tagline: environment.VITE_APP_TAGLINE?.trim() || 'Caisse & Réparation',
-    primaryColor: environment.VITE_APP_PRIMARY_COLOR?.trim() || '#4f46e5',
+    name: environment.VITE_APP_NAME?.trim() || 'PHONE CLINIC',
+    shortName: environment.VITE_APP_SHORT_NAME?.trim() || 'PHONE CLINIC',
+    tagline: environment.VITE_APP_TAGLINE?.trim() || 'REPAIR • SALES • ACCESSORIES',
+    primaryColor: environment.VITE_APP_PRIMARY_COLOR?.trim() || '#5846E8',
     logo: environment.VITE_APP_LOGO?.trim() || '/icon.svg',
   };
   const buildId = Date.now().toString(36);
@@ -135,7 +135,7 @@ function salesBuildPlugin(environment: Record<string, string>): Plugin {
           orientation: 'any',
           lang: 'fr',
           theme_color: brand.primaryColor,
-          background_color: brand.primaryColor,
+          background_color: '#F6F7FB',
           categories: ['business', 'productivity'],
           icons: [
             { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
