@@ -14,7 +14,7 @@ import { fr } from 'date-fns/locale';
 import { cn } from '../lib/utils';
 import { PrintableTicket } from './PrintableTicket';
 import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
-import { calculatePurchaseTotals, getPurchaseCancellationStock, getPurchasePaymentBalance } from '../lib/purchaseAccounting';
+import { calculatePurchaseTotals, getPurchaseCancellationStock, getPurchasePaymentBalance, getPurchaseReceiptStock } from '../lib/purchaseAccounting';
 
 interface InvoicesProps {
   userProfile: UserProfile | null;
@@ -678,7 +678,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           return {
             ref: itemRefs[index],
             line,
-            stock: (Number(snapshot.data().stock) || 0) + line.quantity,
+            stock: getPurchaseReceiptStock(Number(snapshot.data().stock) || 0, line.quantity),
             version,
             movementId: `${line.itemCollection === 'parts' ? 'part' : 'product'}_${line.itemId}_v${version}`,
           };
@@ -918,6 +918,7 @@ export default function Invoices({ userProfile }: InvoicesProps) {
           purchaseId: purchaseRef.id,
           purchaseNumber: purchase.number,
           amountMilli: -purchasePaid,
+          debtReversedMilli: purchaseDebt,
           type: 'purchase_cancellation_credit',
           createdAt: serverTimestamp(),
           createdBy: userProfile.uid,

@@ -4,6 +4,7 @@ import {
   calculatePurchaseTotals,
   getPurchaseCancellationStock,
   getPurchasePaymentBalance,
+  getPurchaseReceiptStock,
 } from './purchaseAccounting';
 
 const chargerLine = {
@@ -15,12 +16,15 @@ const chargerLine = {
 };
 
 test('10 chargers at 15 DT paid 100 DT create 50 DT supplier debt', () => {
+  assert.equal(getPurchaseReceiptStock(0, chargerLine.quantity), 10);
+  assert.equal(chargerLine.unitCostMilli / 1000, 15);
   assert.deepEqual(calculatePurchaseTotals([chargerLine], 100), {
     subtotalMilli: 150_000,
     totalMilli: 150_000,
     paidMilli: 100_000,
     debtMilli: 50_000,
   });
+  assert.equal(calculatePurchaseTotals([chargerLine], 100).paidMilli / 1000, 100);
 });
 
 test('a later 50 DT payment clears the supplier balance', () => {

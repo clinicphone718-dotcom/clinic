@@ -49,6 +49,18 @@ export function getPurchaseCancellationStock(
   return currentStock - purchasedQuantity;
 }
 
+export function getPurchaseReceiptStock(
+  currentStock: number,
+  purchasedQuantity: number,
+): number {
+  if (!Number.isSafeInteger(currentStock) || currentStock < 0 ||
+    !Number.isSafeInteger(purchasedQuantity) || purchasedQuantity <= 0 ||
+    !Number.isSafeInteger(currentStock + purchasedQuantity)) {
+    throw new Error('La quantité reçue ou le stock actuel est invalide.');
+  }
+  return currentStock + purchasedQuantity;
+}
+
 export function getPurchasePaymentBalance(
   currentDebtMilli: number,
   paymentAmount: number,

@@ -226,11 +226,11 @@ service cloud.firestore {
       let inventoryPath = /databases/$(database)/documents/$(data.inventoryCollection)/$(data.productId);
       let expectedId = data.type == 'part_initial_stock'
         ? 'part_' + data.productId + '_v1'
-        : data.type in ['part_restock', 'part_manual_adjustment']
+        : data.type in ['part_restock', 'part_manual_adjustment', 'purchase_restock', 'purchase_cancel'] && data.inventoryCollection == 'parts'
           ? 'part_' + data.productId + '_v' + data.version
             : data.type == 'product_initial_stock'
               ? 'product_' + data.productId + '_v1'
-              : data.type in ['product_restock', 'product_manual_adjustment']
+              : data.type in ['product_restock', 'product_manual_adjustment', 'purchase_restock', 'purchase_cancel']
                 ? 'product_' + data.productId + '_v' + data.version
                   : data.type == 'product_sale'
                     ? 'product_' + data.productId + '_v' + data.version
@@ -275,6 +275,29 @@ service cloud.firestore {
               ? perm('products', 'addEdit') && perm('products', 'adjustStock')
               : perm('products', 'adjustStock')) &&
             (!exists(inventoryPath) || data.type == 'product_initial_stock' || data.type == 'product_restock')) ||
+          (
+            data.type in ['purchase_restock', 'purchase_cancel'] &&
+            isStoreOwnerAdmin(data.get('ownerId', '')) &&
+            data.purchaseId is string &&
+            data.lineIndex is int &&
+            existsAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.ownerId == data.ownerId &&
+            data.lineIndex >= 0 &&
+            data.lineIndex < getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.items.size() &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.items[data.lineIndex].itemId == data.productId &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.items[data.lineIndex].itemCollection == data.inventoryCollection &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.items[data.lineIndex].quantity == data.quantity &&
+            (
+              (data.type == 'purchase_restock' &&
+                data.delta == data.quantity &&
+                getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.status == 'received' &&
+                !exists(/databases/$(database)/documents/purchases/$(data.purchaseId))) ||
+              (data.type == 'purchase_cancel' &&
+                data.delta == -data.quantity &&
+                getAfter(/databases/$(database)/documents/purchases/$(data.purchaseId)).data.status == 'cancelled' &&
+                exists(/databases/$(database)/documents/purchases/$(data.purchaseId)))
+            )
+          ) ||
           (data.type == 'product_sale' &&
             data.inventoryCollection == 'products' &&
             hasMenu('pos') &&
@@ -283,6 +306,26 @@ service cloud.firestore {
             getAfter(/databases/$(database)/documents/sales/$(data.saleId)).data.ownerId == data.ownerId &&
             exists(inventoryPath))
         );
+    }
+    function validPurchaseStockOnlyUpdate(inventoryCollection, itemId) {
+      let movementId = request.resource.data.get('lastStockMovementId', '');
+      let movementPath = /databases/$(database)/documents/stock_movements/$(movementId);
+      let movement = getAfter(movementPath).data;
+      return isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        onlyChangedFields(['stock', 'stockVersion', 'lastStockMovementId', 'ownerId', 'userId']) &&
+        request.resource.data.get('stock', -1) is int &&
+        request.resource.data.get('stock', -1) >= 0 &&
+        request.resource.data.get('stockVersion', -1) is int &&
+        movementId is string &&
+        existsAfter(movementPath) &&
+        !exists(movementPath) &&
+        movement.productId == itemId &&
+        movement.inventoryCollection == inventoryCollection &&
+        movement.ownerId == resource.data.ownerId &&
+        movement.userId == request.auth.uid &&
+        movement.delta == request.resource.data.stock - resource.data.get('stock', 0) &&
+        request.resource.data.stockVersion == movement.version &&
+        request.resource.data.ownerId == resource.data.ownerId;
     }
     function validDashboardStockUpdate() {
       return onlyChangedFields(['stock', 'buyPrice']) &&
@@ -429,6 +472,7 @@ service cloud.firestore {
             request.resource.data.get('stock', 0) == resource.data.get('stock', 0)) ||
           ((perm('products', 'adjustStock') || hasMenu('pos')) &&
             validTechnicianProductStockUpdate(productId)) ||
+          validPurchaseStockOnlyUpdate('products', productId) ||
           (hasMenu('reparation') && validRepairStockOnlyUpdate(productId))
         );
       allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
@@ -467,6 +511,7 @@ service cloud.firestore {
             (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellPrice']) ||
               perm('pieces', 'editSellPrice'))) ||
           (perm('pieces', 'adjustStock') && validRepairPartStockOnlyUpdate(partId)) ||
+          validPurchaseStockOnlyUpdate('parts', partId) ||
           (hasMenu('reparation') && validRepairPartStockOnlyUpdate(partId))
         );
       allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) &&
@@ -603,6 +648,249 @@ service cloud.firestore {
       allow create: if hasAccess(request.resource.data.ownerId) && hasMenu('notes');
       allow update: if hasAccess(resource.data.get('ownerId', request.auth.uid)) && hasMenu('notes');
       allow delete: if hasAccess(resource.data.get('ownerId', request.auth.uid)) && hasMenu('notes');
+    }
+
+    function validPurchaseAttachment(attachment) {
+      return attachment is map &&
+        attachment.keys().hasOnly(['url', 'dataUrl', 'fileName']) &&
+        attachment.get('fileName', '') is string &&
+        (
+          (attachment.get('url', '') is string &&
+            attachment.get('url', '').matches('https://.*') &&
+            !('dataUrl' in attachment)) ||
+          (attachment.get('dataUrl', '') is string &&
+            attachment.get('dataUrl', '').matches('data:image/.*') &&
+            attachment.get('dataUrl', '').size() < 512000 &&
+            !('url' in attachment))
+        );
+    }
+
+    function validSupplierDebtEntry(ownerId, supplierId, entryId, newBalance, oldBalance) {
+      let purchasePath = /databases/$(database)/documents/purchases/$(entryId);
+      let paymentPath = /databases/$(database)/documents/supplier_debts/$(supplierId)/payments/$(entryId);
+      return (
+        existsAfter(purchasePath) &&
+        !exists(purchasePath) &&
+        getAfter(purchasePath).data.ownerId == ownerId &&
+        getAfter(purchasePath).data.supplierId == supplierId &&
+        getAfter(purchasePath).data.status == 'received' &&
+        getAfter(purchasePath).data.debtMilli is int &&
+        newBalance == oldBalance + getAfter(purchasePath).data.debtMilli
+      ) || (
+        existsAfter(paymentPath) &&
+        getAfter(paymentPath).data.ownerId == ownerId &&
+        getAfter(paymentPath).data.supplierId == supplierId &&
+        getAfter(paymentPath).data.purchaseNumber is string &&
+        getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.ownerId == ownerId &&
+        getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.supplierId == supplierId &&
+        getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.lastPaymentId == entryId &&
+        (
+          (getAfter(paymentPath).data.type == 'purchase_initial_payment' &&
+            getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.status == 'received' &&
+            getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.paidMilli == getAfter(paymentPath).data.amountMilli &&
+            newBalance == oldBalance + getAfter(/databases/$(database)/documents/purchases/$(getAfter(paymentPath).data.purchaseId)).data.debtMilli) ||
+          (getAfter(paymentPath).data.type == 'purchase_debt_payment' &&
+            getAfter(paymentPath).data.amountMilli is int &&
+            getAfter(paymentPath).data.amountMilli > 0 &&
+            newBalance == oldBalance - getAfter(paymentPath).data.amountMilli) ||
+          (getAfter(paymentPath).data.type == 'purchase_cancellation_credit' &&
+            getAfter(paymentPath).data.amountMilli is int &&
+            getAfter(paymentPath).data.amountMilli <= 0 &&
+            getAfter(paymentPath).data.debtReversedMilli is int &&
+            getAfter(paymentPath).data.debtReversedMilli >= 0 &&
+            newBalance == oldBalance + getAfter(paymentPath).data.amountMilli - getAfter(paymentPath).data.debtReversedMilli)
+        )
+      );
+    }
+
+    match /purchases/{purchaseId} {
+      allow get: if (
+        !exists(/databases/$(database)/documents/purchases/$(purchaseId)) &&
+        isStoreOwnerAdmin(request.auth.uid) &&
+        purchaseId.matches('^purchase_' + request.auth.uid + '_.*$')
+      ) || (
+        exists(/databases/$(database)/documents/purchases/$(purchaseId)) &&
+        isStoreOwnerAdmin(resource.data.get('ownerId', ''))
+      );
+      allow list: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        request.resource.data.keys().hasOnly([
+          'ownerId', 'number', 'date', 'supplierId', 'supplierName', 'items',
+          'totalMilli', 'paidMilli', 'debtMilli', 'note', 'attachment', 'status',
+          'createdAt', 'createdBy', 'lastPaymentId', 'sessionId'
+        ]) &&
+        request.resource.data.keys().hasAll([
+          'ownerId', 'number', 'date', 'supplierId', 'supplierName', 'items',
+          'totalMilli', 'paidMilli', 'debtMilli', 'note', 'status', 'createdAt', 'createdBy'
+        ]) &&
+        purchaseId == 'purchase_' + request.resource.data.ownerId + '_' + request.resource.data.number &&
+        request.resource.data.number is string &&
+        request.resource.data.number.matches('^[A-Z0-9][A-Z0-9._-]{0,59}$') &&
+        request.resource.data.date is timestamp &&
+        request.resource.data.items is list &&
+        request.resource.data.items.size() > 0 &&
+        request.resource.data.totalMilli is int &&
+        request.resource.data.totalMilli > 0 &&
+        request.resource.data.paidMilli is int &&
+        request.resource.data.paidMilli >= 0 &&
+        request.resource.data.debtMilli is int &&
+        request.resource.data.debtMilli >= 0 &&
+        request.resource.data.paidMilli + request.resource.data.debtMilli == request.resource.data.totalMilli &&
+        request.resource.data.note is string &&
+        request.resource.data.status == 'received' &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.createdBy == request.auth.uid &&
+        exists(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId)) &&
+        get(/databases/$(database)/documents/suppliers/$(request.resource.data.supplierId)).data.ownerId == request.resource.data.ownerId &&
+        (!('attachment' in request.resource.data) || validPurchaseAttachment(request.resource.data.attachment)) &&
+        (
+          request.resource.data.paidMilli == 0 ||
+          (request.resource.data.lastPaymentId is string &&
+           request.resource.data.sessionId is string &&
+           hasOpenCashSession(request.resource.data.sessionId, request.resource.data.ownerId))
+        );
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.ownerId == resource.data.ownerId &&
+        request.resource.data.number == resource.data.number &&
+        request.resource.data.supplierId == resource.data.supplierId &&
+        request.resource.data.items == resource.data.items &&
+        request.resource.data.totalMilli == resource.data.totalMilli &&
+        (
+          (
+            resource.data.status == 'received' &&
+            request.resource.data.status == 'received' &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'paidMilli', 'debtMilli', 'lastPaymentId', 'updatedAt'
+            ]) &&
+            request.resource.data.paidMilli is int &&
+            request.resource.data.debtMilli is int &&
+            request.resource.data.paidMilli > resource.data.paidMilli &&
+            request.resource.data.debtMilli < resource.data.debtMilli &&
+            request.resource.data.paidMilli + request.resource.data.debtMilli == resource.data.totalMilli &&
+            request.resource.data.lastPaymentId is string &&
+            existsAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)) &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.type == 'purchase_debt_payment' &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.purchaseId == purchaseId &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.amountMilli == request.resource.data.paidMilli - resource.data.paidMilli
+          ) ||
+          (
+            resource.data.status == 'received' &&
+            request.resource.data.status == 'cancelled' &&
+            request.resource.data.debtMilli == 0 &&
+            request.resource.data.cancelledAt is timestamp &&
+            request.resource.data.cancelledBy == request.auth.uid &&
+            request.resource.data.cancellationReason is string &&
+            request.resource.data.lastPaymentId is string &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'debtMilli', 'cancelledAt', 'cancelledBy',
+              'cancellationReason', 'lastPaymentId', 'updatedAt'
+            ]) &&
+            existsAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)) &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.type == 'purchase_cancellation_credit' &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.purchaseId == purchaseId &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.amountMilli == -resource.data.paidMilli &&
+            getAfter(/databases/$(database)/documents/supplier_debts/$(resource.data.supplierId)/payments/$(request.resource.data.lastPaymentId)).data.debtReversedMilli == resource.data.debtMilli
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /suppliers/{supplierId} {
+      allow get, list: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        request.resource.data.keys().hasOnly(['ownerId', 'name', 'phone', 'createdAt', 'createdBy']) &&
+        request.resource.data.keys().hasAll(['ownerId', 'name', 'createdAt', 'createdBy']) &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.createdBy == request.auth.uid;
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.get('ownerId', '') == resource.data.ownerId &&
+        request.resource.data.name is string &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /supplier_debts/{supplierId} {
+      allow get: if (
+        exists(/databases/$(database)/documents/supplier_debts/$(supplierId)) &&
+        isStoreOwnerAdmin(resource.data.get('ownerId', ''))
+      ) || (
+        !exists(/databases/$(database)/documents/supplier_debts/$(supplierId)) &&
+        isStoreOwnerAdmin(request.auth.uid) &&
+        exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        get(/databases/$(database)/documents/suppliers/$(supplierId)).data.ownerId == request.auth.uid
+      );
+      allow list: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+      allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+        request.resource.data.supplierId == supplierId &&
+        request.resource.data.supplierName is string &&
+        request.resource.data.balanceMilli is int &&
+        request.resource.data.updatedAt is timestamp &&
+        request.resource.data.lastEntryId is string &&
+        exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        get(/databases/$(database)/documents/suppliers/$(supplierId)).data.ownerId == request.resource.data.ownerId &&
+        validSupplierDebtEntry(
+          request.resource.data.ownerId,
+          supplierId,
+          request.resource.data.lastEntryId,
+          request.resource.data.balanceMilli,
+          0
+        );
+      allow update: if isStoreOwnerAdmin(resource.data.get('ownerId', '')) &&
+        request.resource.data.get('ownerId', '') == resource.data.ownerId &&
+        request.resource.data.supplierId == supplierId &&
+        request.resource.data.supplierName is string &&
+        request.resource.data.balanceMilli is int &&
+        request.resource.data.updatedAt is timestamp &&
+        request.resource.data.lastEntryId is string &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'balanceMilli', 'lastEntryId', 'updatedAt', 'supplierName'
+        ]) &&
+        validSupplierDebtEntry(
+          request.resource.data.ownerId,
+          supplierId,
+          request.resource.data.lastEntryId,
+          request.resource.data.balanceMilli,
+          resource.data.balanceMilli
+        );
+      allow delete: if false;
+
+      match /payments/{paymentId} {
+        allow get, list: if isStoreOwnerAdmin(resource.data.get('ownerId', ''));
+        allow create: if isStoreOwnerAdmin(request.resource.data.get('ownerId', '')) &&
+          request.resource.data.keys().hasOnly([
+            'ownerId', 'supplierId', 'supplierName', 'purchaseId', 'purchaseNumber',
+            'amountMilli', 'debtReversedMilli', 'type', 'sessionId', 'createdAt', 'createdBy'
+          ]) &&
+          request.resource.data.keys().hasAll([
+            'ownerId', 'supplierId', 'supplierName', 'purchaseId', 'purchaseNumber',
+            'amountMilli', 'type', 'createdAt', 'createdBy'
+          ]) &&
+          request.resource.data.supplierId == supplierId &&
+          request.resource.data.amountMilli is int &&
+          request.resource.data.purchaseId is string &&
+          request.resource.data.purchaseNumber is string &&
+          request.resource.data.createdAt is timestamp &&
+          request.resource.data.createdBy == request.auth.uid &&
+          existsAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)) &&
+          getAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)).data.ownerId == request.resource.data.ownerId &&
+          getAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)).data.supplierId == supplierId &&
+          getAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)).data.number == request.resource.data.purchaseNumber &&
+          getAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)).data.lastPaymentId == paymentId &&
+          (
+            (request.resource.data.type in ['purchase_initial_payment', 'purchase_debt_payment'] &&
+              request.resource.data.amountMilli > 0 &&
+              request.resource.data.sessionId is string &&
+              hasOpenCashSession(request.resource.data.sessionId, request.resource.data.ownerId)) ||
+            (request.resource.data.type == 'purchase_cancellation_credit' &&
+              request.resource.data.amountMilli <= 0 &&
+              request.resource.data.debtReversedMilli is int &&
+              request.resource.data.debtReversedMilli >= 0 &&
+              getAfter(/databases/$(database)/documents/purchases/$(request.resource.data.purchaseId)).data.status == 'cancelled')
+          );
+        allow update, delete: if false;
+      }
     }
 
     match /supplies/{supplyId} {

@@ -1,6 +1,6 @@
 # Phone Clinic — Phase A specification
 
-**Status:** Design only; no application code, Firebase configuration, rules, or data were changed. This specification must be approved before implementation or migration.
+**Status:** The original Phase A proposal below is retained as design context. Supplier purchase invoices have since been implemented in the application and Firestore rules have been updated locally; the rules have not been deployed and no data migration has been run.
 
 ## 1. Goal and boundaries
 
@@ -176,6 +176,22 @@ Acceptance tests for implementation should include:
 9. **Service costs and stock:** confirm whether services can have direct cost/margin records. Recommended: no quantity and no catalog cost document for services in Phase A; capture any labor/service expense in a later accounting ledger.
 10. **Legacy cost completeness:** older repairs may lack a cost snapshot; current product cost is not reliable historical evidence. Recommended: preserve unknown as unknown and mark any owner-approved estimate explicitly.
 
-## 8. Phase A implementation gate
+## 8. Original Phase A implementation gate
 
-This document is a proposal, not authorization to change application code or production data. Phase A coding should begin only after decisions 1, 2, 4, 5, 7, and 8 above are confirmed, a migration environment/backup is available, and the rules/test strategy is agreed. Implementation should then be split into reviewed schema/rules tests, migration dry run, UI compatibility changes, and a separately approved cutover. Never run `firebase deploy` as part of analysis or an unapproved phase.
+This gate describes the original proposal and its unimplemented migration. It does not describe the separately requested supplier-invoice work below. No migration or deployment is included in that work.
+
+## 9. Implemented supplier purchase invoices
+
+The application now uses the following store-scoped records:
+
+- `purchases/{purchase_<ownerId>_<normalizedNumber>}`: invoice header, supplier snapshot, item snapshots, total/paid/debt in millimes, status, optional HTTPS or compressed image attachment, and cancellation metadata.
+- `suppliers/{supplierId}`: supplier name and optional phone.
+- `supplier_debts/{supplierId}`: aggregate balance in millimes; `payments/{paymentId}` stores initial payments, later settlements, and cancellation credits.
+- `product_costs/{itemId}` or `part_costs/{itemId}`: latest `buyPrice` in dinars for existing readers plus `currentUnitCostMilli`.
+- `stock_movements/{movementId}`: one `purchase_restock` per received line and one `purchase_cancel` per successfully reversed line.
+
+Creating an invoice, receiving stock, writing purchase movements and costs, updating supplier debt, and recording any initial cash-session outflow are performed in one Firestore transaction. Later settlements also require an open cash session and update the invoice, supplier debt, payment history, and session totals atomically; they do not create a separate `expenses` document. Cancellation is explicit, never deletes the invoice, and is refused when any affected item lacks sufficient stock. Payments already made are retained and become a supplier credit on cancellation.
+
+The local `firestore.rules` file now restricts `purchases`, `suppliers`, `supplier_debts`, and their payment subcollection to the store owner-admin, validates purchase-linked stock movements and payments, and denies deletion. The cost-collection rules retain the application's pre-existing permission behavior. These rules have not been deployed. No production data was changed.
+
+Automated purchase-accounting tests cover the 10-chargeur acceptance values (stock +10, unit cost 15 DT, total 150 DT, payment 100 DT, debt 50 DT), clearing the remaining 50 DT, and refusing cancellation when stock is insufficient. These tests exercise the shared accounting/stock helpers, not a live Firestore emulator transaction. Run them with `npx tsx --test src/lib/purchaseAccounting.test.ts`.
