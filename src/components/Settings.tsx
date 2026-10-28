@@ -313,6 +313,7 @@ export default function Settings({
   const [startupMessage, setStartupMessage] = useState('');
   const [startupAudioTestMessage, setStartupAudioTestMessage] = useState('');
   const startupAudioPreview = React.useRef<HTMLAudioElement>(null);
+  const [startupSurahNumber, setStartupSurahNumber] = useState('112');
   const welcomeChoices = [
     ...verses.map((verse) => ({ id: `verse:${verse.title}`, ...verse })),
     ...adhkarLibrary.map((adhkar) => ({ id: `dhikr:${adhkar.section}:${adhkar.title}`, ...adhkar })),
@@ -1363,6 +1364,35 @@ export default function Settings({
               className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
             />
           </label>
+
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3 space-y-3">
+            <p className="text-xs font-bold text-indigo-950">Source audio Quran — lien direct</p>
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                Numéro de sourate (1–114)
+                <select
+                  value={startupSurahNumber}
+                  onChange={(event) => setStartupSurahNumber(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5"
+                >
+                  {Array.from({ length: 114 }, (_, index) => index + 1).map((number) => (
+                    <option key={number} value={String(number)}>Sourate {number}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setStartupAudioUrl(`https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${Number(startupSurahNumber)}.mp3`);
+                  setStartupAudioTestMessage('Lien direct généré. Cliquez sur « Tester la lecture » pour vérifier le son.');
+                }}
+                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700"
+              >
+                Générer le lien audio
+              </button>
+            </div>
+            <p className="text-[11px] leading-5 text-slate-600">Génère un lien direct de récitation par Mishary Alafasy via le CDN AlQuran.cloud. Le lien est testé par le navigateur au moment de la lecture ; sa disponibilité dépend du service externe.</p>
+          </div>
 
           <label className="block space-y-1 text-xs font-bold text-slate-600">
             رابط URL للمقطع الصوتي (HTTPS direct : .mp3, .m4a, .ogg ou .wav)

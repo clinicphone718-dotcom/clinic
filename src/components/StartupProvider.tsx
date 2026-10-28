@@ -198,10 +198,29 @@ export function StartupProvider({
     audio.volume = config.volume;
     audio.muted = muted;
     if (audio.src !== selectedAudioUrl) audio.src = selectedAudioUrl;
-    audio.onended = () => setAudioPlaying(false);
+    audio.onended = () => {
+      // Les liens générés pour AlQuran.cloud peuvent enchaîner les sourates
+      // sans ajouter de champ à la configuration Firestore existante.
+      const playlistMatch = (audio.currentSrc || audio.src).match(/^(https:\/\/cdn\.islamic\.network\/quran\/audio-surah\/128\/ar\.alafasy\/)(\d+)\.mp3(?:[?#].*)?$/i);
+      if (!config.loop && playlistMatch) {
+        const currentSurah = Number(playlistMatch[2]);
+        const nextSurah = currentSurah >= 114 ? 1 : currentSurah + 1;
+        const nextUrl = `${playlistMatch[1]}${nextSurah}.mp3`;
+        audio.src = nextUrl;
+        audio.play().then(() => {
+          setAudioPlaying(true);
+          setAudioMessage(null);
+        }).catch(() => {
+          setAudioPlaying(false);
+          setAudioMessage('La sourate suivante n’a pas pu démarrer. Appuyez sur Lecture pour réessayer.');
+        });
+        return;
+      }
+      setAudioPlaying(false);
+    };
     audio.onerror = () => {
       setAudioPlaying(false);
-      setAudioMessage('تعذر تشغيل المقطع الصوتي. تحقق من الرابط.');
+      setAudioMessage('تعذر تشغيل المقطع الصوتي. تحقق من الرابط أو من اتصال الإنترنت.');
     };
     try {
       await audio.play();
