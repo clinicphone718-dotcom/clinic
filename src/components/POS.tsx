@@ -3,19 +3,24 @@ import { createPortal } from 'react-dom';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp, runTransaction, getDoc, getDocs, where, getDocFromServer } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { apiFetch } from '../lib/api';
+import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { Product, Client, SaleItem, Sale, Invoice, Category, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Search, ShoppingCart, Trash2, Plus, Minus, User, CreditCard, CheckCircle, AlertCircle, Printer, X, FileText, Barcode, Filter, Tag, Coins, Percent, TrendingUp, UserCheck, Flame } from 'lucide-react';
 import { cn, decodeAzertyBarcode } from '../lib/utils';
 import { format } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 import { PrintableTicket } from './PrintableTicket';
 import { can } from '../lib/permissions';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
 
 interface POSProps {
   userProfile: UserProfile | null;
 }
 
 export default function POS({ userProfile }: POSProps) {
+  const navigate = useNavigate();
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const ownerId = (userProfile?.role === 'admin' ? userProfile?.uid : userProfile?.ownerId) || userProfile?.uid || auth.currentUser?.uid;
   const isAdmin = userProfile?.role === 'admin';
   const canViewBuyPrice = can(userProfile, 'products', 'viewBuyPrice');
@@ -115,7 +120,8 @@ export default function POS({ userProfile }: POSProps) {
     });
     const unsubscribeStore = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
-        setStoreSettings(snapshot.data() as StoreSettings);
+        const data = snapshot.data() as StoreSettings;
+        setStoreSettings({ ...data, ...normalizeFinancialSettings(data) });
       }
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, `settings/${ownerId}`);
@@ -474,18 +480,12 @@ export default function POS({ userProfile }: POSProps) {
     ));
   };
 
-  const subtotal = useMemo(() => {
-    const rawSum = cart.reduce((sum, item) => sum + item.total, 0);
-    return Math.round(rawSum * 1000) / 1000;
-  }, [cart]);
   const currency = storeSettings?.currency || 'DT';
-  const tvaRate = storeSettings?.tvaEnabled !== false ? (storeSettings?.tva || 19) / 100 : 0;
-  const tvaAmount = Math.round(subtotal * tvaRate * 1000) / 1000;
-
-  const cartTotal = useMemo(() => {
-    const totalWithTva = subtotal + tvaAmount;
-    return Math.max(0, Math.round((totalWithTva - discount) * 1000) / 1000);
-  }, [subtotal, tvaAmount, discount]);
+  const financialTotals = useMemo(
+    () => computeTotals(cart, discount, storeSettings),
+    [cart, discount, storeSettings?.tvaEnabled, storeSettings?.tva],
+  );
+  const { subtotal, tva: tvaAmount, total: cartTotal } = financialTotals;
 
   useEffect(() => {
     setReceivedCash(cartTotal);
@@ -518,7 +518,7 @@ export default function POS({ userProfile }: POSProps) {
       const profit = (item.price - buyP) * item.quantity;
       return sum + profit;
     }, 0);
-    return Math.max(0, Math.round((rawProfit - discount) * 1000) / 1000);
+    return Math.round((rawProfit - discount + Number.EPSILON) * 1000) / 1000;
   }, [cart, products, discount, canViewBuyPrice, canViewMargin]);
 
   const downloadPDF = async (invoice: Invoice) => {
@@ -556,6 +556,12 @@ export default function POS({ userProfile }: POSProps) {
 
   const validateSale = async (isCredit: boolean = false, creditPaid: number = 0) => {
     if (cart.length === 0) return;
+    if (!cashSession) {
+      setError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant de vendre.');
+      return;
+    }
 
     // Crédit : un client enregistré est obligatoire (impossible pour un client de passage)
     if (isCredit && !selectedClient) {
@@ -589,6 +595,7 @@ export default function POS({ userProfile }: POSProps) {
 
     try {
       let generatedInvoice: Invoice | null = null;
+      let committedSaleId: string | null = null;
 
       // Vérifie une VRAIE connexion serveur avant la vente. getDocFromServer force une
       // lecture réseau : hors-ligne (ou faux navigator.onLine), elle échoue → on bloque net,
@@ -621,6 +628,11 @@ export default function POS({ userProfile }: POSProps) {
           if (selectedClient && effDebt > 0) {
             clientSnap = await transaction.get(doc(db, 'clients', selectedClient.id));
           }
+          const activeCashSession = await requireOpenCashSession(
+            transaction,
+            userProfile?.uid || auth.currentUser?.uid || '',
+            ownerId || '',
+          );
 
           // 2. LOGIC & VALIDATION
           let nextNum = 1;
@@ -672,7 +684,12 @@ export default function POS({ userProfile }: POSProps) {
           // 3. ALL WRITES LAST
           const saleRef = doc(collection(db, 'sales'));
           const invoiceRef = doc(collection(db, 'invoices'));
+          committedSaleId = saleRef.id;
           transaction.set(counterRef, { lastNum: nextNum }, { merge: true });
+          addCashSessionTotals(transaction, activeCashSession, {
+            sales: cartTotal,
+            cash: effPaid,
+          });
 
           for (const update of stockUpdates) {
             const movementRef = doc(db, 'stock_movements', `product_${update.productId}_v${update.version}`);
@@ -713,8 +730,13 @@ export default function POS({ userProfile }: POSProps) {
             paid: effPaid,
             debt: effDebt,
             tva: tvaAmount,
+            subtotal: financialTotals.subtotal,
+            discount: financialTotals.discount,
+            tvaEnabled: storeSettings?.tvaEnabled === true,
+            tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             items: cart,
             invoiceId: invoiceRef.id,
+            sessionId: activeCashSession.id,
             ownerId,
             userId: userProfile?.uid || ownerId
           };
@@ -732,8 +754,13 @@ export default function POS({ userProfile }: POSProps) {
             paid: effPaid,
             debt: effDebt,
             tva: tvaAmount,
+            subtotal: financialTotals.subtotal,
+            discount: financialTotals.discount,
+            tvaEnabled: storeSettings?.tvaEnabled === true,
+            tvaRate: storeSettings?.tvaEnabled === true ? Number(storeSettings.tva) || 0 : 0,
             date: serverTimestamp(),
             items: cart,
+            sessionId: activeCashSession.id,
             ownerId,
             userId: userProfile?.uid || ownerId
           };
@@ -743,6 +770,15 @@ export default function POS({ userProfile }: POSProps) {
           
           generatedInvoice = invoiceData as any;
         });
+      }
+
+      if (committedSaleId) {
+        try {
+          await apiFetch(`/financial/sales/${encodeURIComponent(committedSaleId)}/costs`, { method: 'POST' });
+        } catch (costError) {
+          console.error('Sale purchase-cost snapshot failed after sale commit.');
+          setError(`Vente enregistrée, mais le coût d'achat n'a pas pu être figé. ${costError instanceof Error ? costError.message : ''}`);
+        }
       }
 
       setSaleSuccess(isCredit ? 'Vente enregistrée à crédit !' : 'Vente validée avec succès !');
@@ -763,7 +799,15 @@ export default function POS({ userProfile }: POSProps) {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:h-[calc(100vh-130px)] min-h-0 relative">
+    <div className="space-y-4 pb-4">
+      <h1 className="font-display text-[34px] font-extrabold leading-tight tracking-tight text-slate-900 lg:text-[52px]">Vente</h1>
+      <div className="relative grid min-h-0 grid-cols-1 gap-4 lg:h-[calc(100vh-210px)] lg:grid-cols-12">
+      {!cashSession && (
+        <div className="order-0 flex items-center justify-between gap-3 rounded-[18px] border border-[#F6C9BE] bg-[#FBDDD5] p-3 text-sm text-[#8A210A] lg:col-span-12">
+          <span>{cashSessionLoading ? 'Vérification de la caisse…' : 'Aucune session ouverte : la vente est bloquée.'}</span>
+          {!cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="min-h-11 shrink-0 rounded-full bg-[#0A0A0A] px-4 text-xs font-black text-white">Ouvrir la caisse</button>}
+        </div>
+      )}
       {/* Hidden printable ticket for POS - Render outside #root using Portal */}
       {createPortal(
         <div className="print-container">
@@ -777,14 +821,14 @@ export default function POS({ userProfile }: POSProps) {
       {/* Floating Scan Notification */}
       {scanNotification && (
         <div className={cn(
-          "absolute top-4 left-1/2 -translate-x-1/2 z-[90] flex items-center gap-2 px-3 py-1.5 rounded-full shadow-md border text-[11px] font-black animate-in fade-in slide-in-from-top-4 duration-200 backdrop-blur-md transition-all",
+          "absolute left-1/2 top-4 z-[90] flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-black shadow-md backdrop-blur-md transition-all",
           scanNotification.type === 'success' 
-            ? "bg-emerald-50/90 border-emerald-200 text-emerald-800" 
-            : "bg-rose-50/90 border-rose-200 text-rose-800"
+            ? "border-[#E2E2DF] bg-white/95 text-[#0A0A0A]"
+            : "border-[#F6C9BE] bg-[#FBDDD5]/95 text-[#8A210A]"
         )}>
           <div className={cn(
             "w-1.5 h-1.5 rounded-full animate-ping shrink-0",
-            scanNotification.type === 'success' ? "bg-emerald-500" : "bg-rose-500"
+            scanNotification.type === 'success' ? "bg-[#5C5C5C]" : "bg-[#B3261E]"
           )} />
           <span>{scanNotification.message}</span>
         </div>
@@ -793,26 +837,26 @@ export default function POS({ userProfile }: POSProps) {
       {/* Left: Product Selection (Compact Sidebar) */}
       <div className="order-2 lg:order-1 lg:col-span-4 flex flex-col gap-2.5 min-h-0 h-full">
         {/* Top Controls Box (Highly Compact) */}
-        <div className="bg-white p-3 rounded-xl border border-gray-150 shadow-3xs space-y-2">
+        <div className="space-y-2 rounded-[20px] border border-slate-800 bg-white p-3">
           {/* Barcode automatic scan status and manual input */}
-          <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-100 p-2 rounded-lg relative">
+          <div className="relative flex flex-col gap-1.5 rounded-xl border border-slate-100 bg-slate-50 p-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <div className="relative flex items-center justify-center">
-                  <Barcode className={cn("w-4 h-4 text-indigo-600", scannerActive && "animate-pulse")} />
-                  {scannerActive && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />}
+                  <Barcode className={cn("h-4 w-4 text-emerald-600", scannerActive && "animate-pulse")} />
+                  {scannerActive && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500" />}
                 </div>
                 <div className="flex flex-col leading-tight">
-                  <span className="text-[9px] font-black text-slate-700 uppercase tracking-wider">Lecteur Code à Barre</span>
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-800">Lecteur Code à Barre</span>
                 </div>
               </div>
               <button
                 onClick={() => setScannerActive(!scannerActive)}
                 className={cn(
-                  "px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider transition-all border cursor-pointer",
+                  "min-h-11 rounded-full border px-3 text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer",
                   scannerActive
-                    ? "bg-emerald-500 text-white border-emerald-500 shadow-sm"
-                    : "bg-slate-200 text-slate-600 border-slate-300"
+                    ? "bg-emerald-600 text-white border-emerald-600"
+                    : "bg-white text-slate-500 border-slate-200"
                 )}
               >
                 {scannerActive ? "Actif" : "Inactif"}
@@ -820,10 +864,10 @@ export default function POS({ userProfile }: POSProps) {
             </div>
 
             {scannerActive && (
-              <div className="mt-0.5 bg-emerald-50/50 border border-emerald-100 p-1.5 rounded flex flex-col gap-1 animate-in fade-in duration-200">
+              <div className="mt-0.5 flex flex-col gap-1 rounded-lg border border-emerald-100 bg-emerald-50/70 p-1.5">
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
-                    <Barcode className="h-3.5 w-3.5 text-emerald-600 animate-pulse" />
+                    <Barcode className="h-3.5 w-3.5 text-emerald-600" />
                   </div>
                   <input
                     type="text"
@@ -860,7 +904,7 @@ export default function POS({ userProfile }: POSProps) {
                         e.stopPropagation();
                       }
                     }}
-                    className="block w-full pl-7 pr-2 py-0.5 bg-white border border-emerald-200 rounded text-[10px] font-mono font-bold tracking-wider placeholder:text-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-500/20 focus:border-emerald-500 text-emerald-950 transition-all"
+                    className="block w-full rounded-lg border border-emerald-200 bg-white py-2 pl-7 pr-2 font-mono text-[10px] font-bold tracking-wider text-emerald-700 placeholder:text-emerald-600/70 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/10"
                   />
                 </div>
               </div>
@@ -869,14 +913,14 @@ export default function POS({ userProfile }: POSProps) {
 
           {/* Search bar */}
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               placeholder="Rechercher nom ou code barre..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={handleSearchKeyDown}
-              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all font-semibold text-xs text-slate-800"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 text-xs font-semibold text-slate-800 outline-none transition-all focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10"
             />
           </div>
 
@@ -885,10 +929,10 @@ export default function POS({ userProfile }: POSProps) {
             <button
               onClick={() => setSelectedCategory('all')}
               className={cn(
-                "px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider whitespace-nowrap transition-all border cursor-pointer",
+                "min-h-11 whitespace-nowrap rounded-full border px-4 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
                 selectedCategory === 'all' 
-                  ? "bg-indigo-600 text-white border-indigo-600 shadow-xs" 
-                  : "bg-white text-gray-500 border-gray-200 hover:border-indigo-500 hover:text-indigo-600"
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/20"
+                  : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
               )}
             >
               Tous
@@ -898,10 +942,10 @@ export default function POS({ userProfile }: POSProps) {
                 key={cat.id}
                 onClick={() => setSelectedCategory(cat.name)}
                 className={cn(
-                  "px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider whitespace-nowrap transition-all border cursor-pointer",
-                  selectedCategory === cat.name 
-                    ? "bg-indigo-600 text-white border-indigo-600 shadow-xs" 
-                    : "bg-white text-gray-500 border-gray-200 hover:border-indigo-500 hover:text-indigo-600"
+                  "min-h-11 whitespace-nowrap rounded-full border px-4 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                  selectedCategory === cat.name
+                    ? "bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/20"
+                    : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700"
                 )}
               >
                 {cat.name}
@@ -918,65 +962,57 @@ export default function POS({ userProfile }: POSProps) {
               onClick={() => addToCart(product)}
               disabled={product.inventoryType !== 'service' && product.stock <= 0}
               className={cn(
-                "relative bg-white rounded-2xl border border-slate-200/80 shadow-3xs text-left flex flex-col justify-between group overflow-hidden h-[110px] min-w-0 w-full cursor-pointer transition-all duration-150",
-                "hover:border-transparent hover:shadow-lg hover:shadow-violet-500/15 hover:-translate-y-0.5 hover:ring-2 hover:ring-violet-500/60 active:scale-[0.97]",
+                "group relative flex h-[110px] w-full min-w-0 cursor-pointer flex-col justify-between overflow-hidden rounded-[18px] border border-slate-100 bg-white text-left shadow-sm transition-colors",
+                "hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 active:scale-[0.99]",
                 product.inventoryType !== 'service' && product.stock <= 0 && "opacity-60 grayscale cursor-not-allowed"
               )}
             >
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-violet-600 via-fuchsia-500 to-violet-600 opacity-70 group-hover:opacity-100 transition-opacity"></div>
+              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-fuchsia-500 to-indigo-500 opacity-80 transition-opacity group-hover:opacity-100"></div>
 
               <div className="w-full flex justify-between items-center gap-1 px-2 pt-2">
-                <span className="flex items-center gap-1 text-[7px] font-black uppercase tracking-wider truncate max-w-[60%] text-slate-400">
+                <span className="flex max-w-[60%] items-center gap-1 truncate text-[7px] font-black uppercase tracking-wider text-slate-400">
                   <span className={cn(
-                    "w-1.5 h-1.5 rounded-full shrink-0",
-                    (() => {
-                      const cat = categories.find(c => c.name === product.category);
-                      if (!cat) return "bg-violet-500";
-                      return cat.type === 'boissons' ? "bg-blue-500" :
-                             cat.type === 'entretien' ? "bg-orange-500" :
-                             cat.type === 'frais' ? "bg-fuchsia-500" :
-                             "bg-violet-500";
-                    })()
+                    "h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500"
                   )}></span>
                   {product.category}
                 </span>
                 {topSellerIds.has(product.id) ? (
-                  <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 text-white text-[7px] font-black uppercase tracking-wider shadow-xs shrink-0">
+                  <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wider text-white">
                     <Flame className="w-2.5 h-2.5" /> Top
                   </span>
                 ) : (salesQtyMap[product.id] || 0) > 0 ? (
-                  <span className="text-[7px] font-black text-violet-400 uppercase tracking-wider shrink-0">
+                  <span className="shrink-0 text-[7px] font-black uppercase tracking-wider text-slate-400">
                     {salesQtyMap[product.id]} vendus
                   </span>
                 ) : null}
               </div>
 
               <div className="flex-1 flex items-center px-2 py-0.5 min-w-0 w-full">
-                <h3 className="font-extrabold text-slate-800 text-[11px] leading-tight break-words whitespace-normal overflow-hidden line-clamp-2 text-ellipsis group-hover:text-violet-700 transition-colors w-full">
+                <h3 className="w-full overflow-hidden break-words text-ellipsis text-[11px] font-bold leading-tight text-slate-800 line-clamp-2">
                   {product.name}
                 </h3>
               </div>
 
               <div className="w-full px-2 pb-2 flex items-center justify-between gap-1 mt-auto">
                 <div className="min-w-0">
-                  <span className="text-[12px] font-black bg-gradient-to-r from-violet-700 to-fuchsia-600 bg-clip-text text-transparent truncate block leading-none">
+                  <span className="block truncate font-mono text-[12px] font-bold leading-none text-indigo-700 tabular-nums">
                     {product.sellPrice.toFixed(3)} <span className="text-[8px] font-bold">{currency}</span>
                   </span>
-                  {product.inventoryType === 'service' ? <span className="text-[7px] font-black uppercase tracking-wider text-emerald-600">Service</span> : <span className={cn(
+                  {product.inventoryType === 'service' ? <span className="text-[7px] font-black uppercase tracking-wider text-[#5C5C5C]">Service</span> : <span className={cn(
                     "text-[7px] font-black uppercase tracking-wider",
-                    product.stock <= 5 ? "text-rose-600" : "text-slate-400"
+                    product.stock <= 5 ? "text-rose-600" : "text-slate-500"
                   )}>
                     Stock {product.stock}
                   </span>}
                 </div>
-                <div className="w-6 h-6 rounded-full bg-violet-50 text-violet-600 group-hover:bg-gradient-to-r group-hover:from-violet-600 group-hover:to-fuchsia-600 group-hover:text-white group-hover:scale-110 transition-all duration-150 shrink-0 flex items-center justify-center shadow-3xs">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 transition-colors group-hover:bg-indigo-600 group-hover:text-white">
                   <Plus className="w-3.5 h-3.5" />
                 </div>
               </div>
 
               {product.inventoryType !== 'service' && product.stock <= 0 && (
                 <div className="absolute inset-0 bg-white/70 backdrop-blur-[1px] rounded-xl flex items-center justify-center p-1 text-center">
-                  <div className="bg-rose-600 text-white px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shadow-xs">
+                  <div className="rounded-full bg-[#B3261E] px-2 py-1 text-[8px] font-black uppercase tracking-wider text-white">
                     Rupture
                   </div>
                 </div>
@@ -988,12 +1024,12 @@ export default function POS({ userProfile }: POSProps) {
 
       {/* Right: Cart, Summary & Checkout Area (Large & Dominant) */}
       <div className="order-1 lg:order-2 lg:col-span-8 flex flex-col gap-2.5 min-h-0 h-full">
-        <div className="bg-white rounded-2xl border border-gray-150 shadow-sm flex flex-col flex-1 overflow-hidden h-full">
+        <div className="flex h-full flex-1 flex-col overflow-hidden rounded-[24px] border border-[#E2E2DF] bg-white">
           
           {/* Header Ticket block */}
-          <div className="p-2.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-            <h2 className="font-black text-slate-700 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-              <ShoppingCart className="w-4.5 h-4.5 text-indigo-600" />
+          <div className="flex items-center justify-between border-b border-[#E2E2DF] bg-[#F4F4F2] p-3">
+            <h2 className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#0A0A0A]">
+              <ShoppingCart className="h-4 w-4 text-[#0A0A0A]" />
               Ticket de caisse ({cart.length})
             </h2>
             <button 
@@ -1003,17 +1039,17 @@ export default function POS({ userProfile }: POSProps) {
                 setDiscountInput('0');
               }}
               disabled={cart.length === 0}
-              className="text-[10px] font-black text-rose-500 hover:text-rose-600 transition-colors uppercase tracking-widest disabled:opacity-30 cursor-pointer"
+              className="min-h-11 cursor-pointer rounded-full px-3 text-[10px] font-black uppercase tracking-widest text-[#8A210A] transition-colors hover:bg-[#FBDDD5] disabled:opacity-30"
             >
               Vider le Panier
             </button>
           </div>
 
           {/* Client Selection */}
-          <div className="p-2.5 border-b border-slate-100 bg-slate-50/30 flex items-center gap-2">
+          <div className="flex items-center gap-2 border-b border-[#E2E2DF] bg-[#F4F4F2] p-3">
             <div className="w-full relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <UserCheck className="h-4.5 w-4.5 text-indigo-600" />
+                <UserCheck className="h-4.5 w-4.5 text-[#5C5C5C]" />
               </div>
               <select
                 value={selectedClient?.id || ''}
@@ -1025,7 +1061,7 @@ export default function POS({ userProfile }: POSProps) {
                     setReceivedCashInput(cartTotal.toFixed(3));
                   }
                 }}
-                className="w-full pl-9 pr-3 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/15 focus:border-indigo-500 transition-all shadow-3xs"
+                className="w-full rounded-xl border border-[#E2E2DF] bg-white py-2 pl-9 pr-3 text-xs font-bold text-[#0A0A0A] outline-none transition-all focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
               >
                 <option value="">👤 Client de passage</option>
                 {clients.map(c => (
@@ -1038,15 +1074,15 @@ export default function POS({ userProfile }: POSProps) {
           {/* Table representing the list of items in the Cart (Ticket columns) */}
           <div className="flex-1 overflow-y-auto p-3 min-h-0 scrollbar-thin">
             {cart.length === 0 ? (
-              <div className="h-full py-16 flex flex-col items-center justify-center text-slate-350 gap-2">
-                <ShoppingCart className="w-12 h-12 opacity-30" />
-                <p className="text-[10px] uppercase tracking-wider font-black">Aucun produit au panier</p>
+              <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-[#5C5C5C]">
+                <ShoppingCart className="h-12 w-12 opacity-30" />
+                <p className="text-[10px] font-black uppercase tracking-wider">Aucun produit au panier</p>
               </div>
             ) : (
               <div className="w-full overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs min-w-[420px] sm:min-w-0">
                   <thead>
-                    <tr className="border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider bg-slate-50">
+                    <tr className="border-b border-[#E2E2DF] bg-[#F4F4F2] text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">
                       <th className="py-2.5 px-3 text-left">Produit</th>
                       <th className="py-2.5 px-2 text-center w-24">Qté</th>
                       <th className="py-2.5 px-2 text-right w-20">Prix</th>
@@ -1054,7 +1090,7 @@ export default function POS({ userProfile }: POSProps) {
                       <th className="py-2.5 px-3 text-center w-8"></th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-[#E2E2DF]">
                     {cart.map((item) => (
                       <tr
                         key={item.productId}
@@ -1062,21 +1098,24 @@ export default function POS({ userProfile }: POSProps) {
                         className={cn(
                           "transition-colors group cursor-pointer",
                           selectedCartItemId === item.productId
-                            ? "bg-indigo-50/90 shadow-[inset_2px_0_0_0_theme(colors.indigo.500)]"
-                            : "hover:bg-slate-50/75"
+                            ? "bg-[#F4F4F2] shadow-[inset_2px_0_0_0_#0A0A0A]"
+                            : "hover:bg-[#F4F4F2]"
                         )}
                       >
                         <td className="py-3 px-3 text-left">
-                          <p className="font-extrabold text-slate-800 text-xs sm:text-[13px] leading-snug break-words line-clamp-2" title={item.name}>
+                          <p className="break-words text-xs font-bold leading-snug text-[#0A0A0A] line-clamp-2 sm:text-[13px]" title={item.name}>
                             {item.name}
                           </p>
+                          {canViewMargin && (products.find(product => product.id === item.productId)?.buyPrice || 0) > item.price && (
+                            <span className="mt-1 inline-flex rounded-full bg-[#FBDDD5] px-2 py-0.5 text-[9px] font-black uppercase text-[#8A210A]">Vendu à perte</span>
+                          )}
                         </td>
                         <td className="py-3 px-2 text-center">
-                          <div className="inline-flex items-center gap-1.5 bg-slate-100/80 border border-slate-200/60 rounded-lg p-0.5 shadow-3xs">
+                          <div className="inline-flex items-center gap-1.5 rounded-lg border border-[#E2E2DF] bg-[#F4F4F2] p-0.5">
                             <button 
                               onClick={() => updateQuantity(item.productId, -1)}
                               disabled={item.quantity <= 1}
-                              className="w-5.5 h-5.5 rounded-md bg-white text-slate-700 flex items-center justify-center hover:bg-slate-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shadow-3xs cursor-pointer font-bold"
+                              className="flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-full bg-white font-bold text-[#0A0A0A] transition-colors hover:bg-[#E2E2DF] disabled:cursor-not-allowed disabled:opacity-30"
                               title="Diminuer la quantité"
                             >
                               <Minus className="w-3 h-3" />
@@ -1114,7 +1153,7 @@ export default function POS({ userProfile }: POSProps) {
                                   }
                                   e.stopPropagation();
                                 }}
-                                className="w-10 text-xs font-black text-slate-900 font-mono text-center bg-white border border-indigo-400 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500/30 px-1 py-0.5"
+                                className="w-12 rounded-md border border-[#0A0A0A] bg-white px-1 py-0.5 text-center font-mono text-xs font-black text-[#0A0A0A] focus:outline-none focus:ring-2 focus:ring-[#0A0A0A]/20"
                               />
                             ) : (
                               <span
@@ -1122,7 +1161,7 @@ export default function POS({ userProfile }: POSProps) {
                                   setEditingQtyId(item.productId);
                                   setEditingQtyValue(String(item.quantity));
                                 }}
-                                className="w-8 text-xs sm:text-sm font-black text-slate-850 font-mono text-center cursor-pointer hover:bg-indigo-50 hover:text-indigo-600 rounded px-1 py-0.5 transition-colors select-none border border-transparent hover:border-indigo-200"
+                                className="min-w-11 cursor-pointer select-none rounded px-1 py-2 text-center font-mono text-xs font-black text-[#0A0A0A] transition-colors hover:bg-white sm:text-sm"
                                 title="Cliquer pour modifier la quantité"
                               >
                                 {item.quantity}
@@ -1135,7 +1174,7 @@ export default function POS({ userProfile }: POSProps) {
                                 const p = products.find(prod => prod.id === item.productId);
                                 return p ? p.inventoryType !== 'service' && item.quantity >= p.stock : false;
                               })()}
-                              className="w-5.5 h-5.5 rounded-md bg-white text-slate-700 flex items-center justify-center hover:bg-slate-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shadow-3xs cursor-pointer font-bold"
+                              className="flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-full bg-white font-bold text-[#0A0A0A] transition-colors hover:bg-[#E2E2DF] disabled:cursor-not-allowed disabled:opacity-30"
                               title="Augmenter la quantité"
                             >
                               <Plus className="w-3 h-3" />
@@ -1145,13 +1184,13 @@ export default function POS({ userProfile }: POSProps) {
                         <td className="py-3 px-2 text-right font-semibold text-slate-550 font-mono text-xs sm:text-[13px]">
                           {item.price.toFixed(3)} <span className="text-[9px] font-medium text-slate-400">{currency}</span>
                         </td>
-                        <td className="py-3 px-2 text-right font-black text-indigo-650 font-mono text-xs sm:text-sm">
-                          {item.total.toFixed(3)} <span className="text-[10px] font-bold text-indigo-400">{currency}</span>
+                        <td className="py-3 px-2 text-right font-display text-xs font-bold text-[#0A0A0A] tabular-nums sm:text-sm">
+                          {item.total.toFixed(3)} <span className="text-[10px] font-bold text-[#5C5C5C]">{currency}</span>
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <button 
+                          <button
                             onClick={() => removeFromCart(item.productId)}
-                            className="w-7 h-7 rounded-lg hover:bg-rose-50 text-rose-500 hover:text-rose-600 flex items-center justify-center transition-all cursor-pointer opacity-70 group-hover:opacity-100 shadow-3xs border border-transparent hover:border-rose-100"
+                            className="flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-full border border-transparent text-[#8A210A] transition-colors hover:border-[#F6C9BE] hover:bg-[#FBDDD5]"
                             title="Supprimer du panier"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1166,40 +1205,40 @@ export default function POS({ userProfile }: POSProps) {
           </div>
 
           {/* Summary Cards Panel (Tableau récapitulatif in 4 columns row on desktop, 2x2 on mobile) */}
-          <div className="bg-slate-50/50 p-2 border-t border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 gap-2 border-t border-[#E2E2DF] bg-[#F4F4F2] p-2 sm:grid-cols-4">
             {/* Card 1: Nombre d'articles */}
-            <div className="bg-white border border-slate-150 rounded-lg p-2 flex items-center justify-between shadow-3xs">
+            <div className="flex items-center justify-between rounded-xl border border-[#E2E2DF] bg-white p-2">
               <div className="min-w-0">
-                <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Articles</span>
-                <span className="text-sm font-black text-slate-800 font-mono block leading-none mt-1">
-                  {cart.reduce((sum, item) => sum + item.quantity, 0)} <span className="text-[9px] font-bold text-slate-500 uppercase">pces</span>
+                <span className="block text-[8px] font-black uppercase tracking-wider text-[#5C5C5C]">Articles</span>
+                <span className="mt-1 block font-display text-sm font-bold leading-none text-[#0A0A0A] tabular-nums">
+                  {cart.reduce((sum, item) => sum + item.quantity, 0)} <span className="text-[9px] font-bold uppercase text-[#5C5C5C]">pces</span>
                 </span>
               </div>
-              <div className="w-6 h-6 rounded bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 ml-1">
-                <ShoppingCart className="w-3 h-3" />
+              <div className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] text-[#0A0A0A]">
+                <ShoppingCart className="h-3 w-3" />
               </div>
             </div>
 
             {/* Card 2: Montant Brut */}
-            <div className="bg-white border border-slate-150 rounded-lg p-2 flex items-center justify-between shadow-3xs">
+            <div className="flex items-center justify-between rounded-xl border border-[#E2E2DF] bg-white p-2">
               <div className="min-w-0">
-                <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Total Brut</span>
-                <span className="text-xs sm:text-sm font-black text-slate-700 font-mono block leading-none mt-1 truncate">
-                  {(subtotal + tvaAmount).toFixed(3)} <span className="text-[8px] font-bold text-slate-500">{currency}</span>
+                <span className="block text-[8px] font-black uppercase tracking-wider text-[#5C5C5C]">Total Brut</span>
+                <span className="mt-1 block truncate font-display text-xs font-bold leading-none text-[#0A0A0A] tabular-nums sm:text-sm">
+                  {(subtotal + tvaAmount).toFixed(3)} <span className="text-[8px] font-bold text-[#5C5C5C]">{currency}</span>
                 </span>
               </div>
-              <div className="w-6 h-6 rounded bg-slate-100 text-slate-600 flex items-center justify-center shrink-0 ml-1">
-                <Coins className="w-3 h-3" />
+              <div className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] text-[#5C5C5C]">
+                <Coins className="h-3 w-3" />
               </div>
             </div>
 
             {/* Card 3: Remise Appliquée avec champ d'écriture directe (Sleek) */}
-            <div className="bg-amber-50/60 border border-amber-200/80 rounded-lg p-2 flex flex-col justify-between shadow-3xs">
+            <div className="flex flex-col justify-between rounded-xl border border-amber-200 bg-amber-50 p-2">
               <div className="flex items-center justify-between">
-                <span className="text-[8px] font-black text-amber-800 uppercase tracking-wider">Remise (DT)</span>
-                <Percent className="w-3 h-3 text-amber-600 shrink-0" />
+                <span className="text-[8px] font-black uppercase tracking-wider text-amber-800">Remise (DT)</span>
+                <Percent className="h-3 w-3 shrink-0 text-amber-600" />
               </div>
-              <div className="flex items-center gap-1 mt-0.5 bg-white border border-amber-200 rounded-md p-0.5">
+              <div className="mt-0.5 flex items-center gap-1 rounded-md border border-amber-200 bg-white p-0.5">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1224,67 +1263,73 @@ export default function POS({ userProfile }: POSProps) {
                     }
                   }}
                   placeholder="0.000"
-                  className="w-full bg-transparent px-1 text-[10px] font-black font-mono text-amber-950 focus:outline-none text-right"
+                  className="w-full bg-transparent px-1 text-right font-mono text-[10px] font-black text-amber-900 focus:outline-none"
                 />
               </div>
               {/* Presets remise super compacts */}
-              <div className="flex gap-1 mt-1 justify-end">
+              <div className="mt-1 flex flex-wrap justify-end gap-1">
                 <button 
                   type="button"
                   onClick={() => { setDiscount(0); setDiscountInput('0'); }}
-                  className="text-[7px] font-bold bg-white hover:bg-amber-100 text-amber-850 px-1 py-0.5 rounded border border-amber-250 cursor-pointer"
+                  className="min-h-11 rounded-full border border-amber-300 bg-white px-3 text-[7px] font-bold text-amber-900 cursor-pointer hover:bg-amber-100"
                 >
                   Clear
                 </button>
                 <button 
                   type="button"
                   onClick={() => { setDiscount(5); setDiscountInput('5.000'); }}
-                  className="text-[7px] font-black bg-amber-600 text-white hover:bg-amber-700 px-1 py-0.5 rounded cursor-pointer"
+                  className="min-h-11 rounded-full bg-amber-600 px-3 text-[7px] font-black text-white cursor-pointer hover:bg-amber-700"
                 >
                   -5DT
                 </button>
                 <button 
                   type="button"
                   onClick={() => { setDiscount(10); setDiscountInput('10.000'); }}
-                  className="text-[7px] font-black bg-amber-600 text-white hover:bg-amber-700 px-1 py-0.5 rounded cursor-pointer"
+                  className="min-h-11 rounded-full bg-amber-600 px-3 text-[7px] font-black text-white cursor-pointer hover:bg-amber-700"
                 >
                   -10DT
                 </button>
               </div>
             </div>
 
-            {canViewMargin && <div className="bg-emerald-50/50 border border-emerald-200/60 rounded-lg p-2 flex items-center justify-between shadow-3xs">
+            {canViewMargin && <div className="flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50 p-2">
               <div className="min-w-0">
-                <span className="text-[8px] font-black text-emerald-800 uppercase tracking-wider block">Bénéfice estimé</span>
-                <span className="text-xs sm:text-sm font-black text-emerald-700 font-mono block leading-none mt-1 truncate">
-                  {estimatedBenefit.toFixed(3)} <span className="text-[8px] font-bold text-emerald-650">{currency}</span>
+                <span className="block text-[8px] font-black uppercase tracking-wider text-[#5C5C5C]">Bénéfice estimé</span>
+                <span className={cn(
+                  "text-xs sm:text-sm font-black font-mono block leading-none mt-1 truncate",
+                  estimatedBenefit < 0 ? "text-rose-700" : "text-emerald-800",
+                )}>
+                  {estimatedBenefit.toFixed(3)} <span className={cn(
+                    "text-[8px] font-bold",
+                    estimatedBenefit < 0 ? "text-rose-700" : "text-emerald-800",
+                  )}>{currency}</span>
                 </span>
               </div>
-              <div className="w-6 h-6 rounded bg-emerald-100 text-emerald-650 flex items-center justify-center shrink-0 ml-1">
-                <TrendingUp className="w-3 h-3" />
+              <div className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                <TrendingUp className="h-3 w-3" />
               </div>
             </div>}
           </div>
 
           {/* Bottom Checkout Zone (Always Visible & Split for Wide Screens) */}
-          <div className="bg-slate-900 border-t border-slate-950 p-3.5 space-y-3 rounded-b-2xl">
+          <div className="space-y-3 rounded-b-[24px] border-t border-slate-800 bg-slate-900 p-3.5">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
               
               {/* Left Column: Total Net & Real-time Change Calculator */}
-              <div className="md:col-span-6 flex flex-col justify-between gap-2.5 bg-slate-850/45 p-3 rounded-xl border border-slate-800/60">
+              <div className="md:col-span-6 flex flex-col justify-between gap-2.5 rounded-xl border border-slate-800 bg-slate-900 p-3">
                 {/* GIANT DOCK FOR NET TOTAL */}
                 <div className="flex flex-col gap-1 text-center animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between text-indigo-300 font-black text-[9px] uppercase tracking-widest pb-1 border-b border-slate-800">
+                  <div className="flex items-center justify-between border-b border-slate-700 pb-1 text-[9px] font-black uppercase tracking-widest text-indigo-200">
                     <span>Total Net à payer</span>
-                    <span className="bg-indigo-500/10 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/20 text-[8px]">
-                      {storeSettings?.tvaEnabled !== false ? `TVA (${storeSettings?.tva || 19}%)` : 'Hors taxe'}
+                    <span className="rounded-full border border-indigo-400/20 bg-indigo-500/15 px-2 py-1 text-[8px] text-indigo-200">
+                      {storeSettings?.tvaEnabled === true ? `TVA (${storeSettings.tva || 0}%)` : 'Hors taxe'}
                     </span>
                   </div>
                   <div className="flex justify-center items-center gap-1 mt-1.5">
-                    <span className="text-3xl sm:text-4xl font-black font-mono tracking-tighter text-white leading-none drop-shadow-sm select-all">
+                    <span className="select-all font-mono text-3xl font-bold leading-none tracking-tighter text-white tabular-nums sm:text-4xl">
                       {cartTotal.toFixed(3)}
                     </span>
-                    <span className="text-sm font-black text-indigo-400 uppercase tracking-wider ml-1">
+                    <span className="ml-1 text-sm font-black uppercase tracking-wider text-indigo-300">
                       {currency}
                     </span>
                   </div>
@@ -1293,12 +1338,12 @@ export default function POS({ userProfile }: POSProps) {
                 {/* REAL-TIME CHANGE CALCULATOR */}
                 {receivedCash > 0 && (
                   <div className={cn(
-                    "p-2 rounded-lg border flex items-center justify-between text-xs font-bold leading-none shadow-sm transition-all duration-200 mt-1",
+                    "mt-1 flex items-center justify-between rounded-lg border p-2 text-xs font-bold leading-none transition-all",
                     receivedCash > cartTotal
-                      ? "bg-emerald-950/70 border-emerald-900 text-emerald-400"
+                      ? "bg-emerald-900/40 border-emerald-700/50 text-emerald-100"
                       : receivedCash < cartTotal
-                        ? "bg-rose-950/70 border-rose-900 text-rose-300"
-                        : "bg-indigo-950/70 border-indigo-900 text-indigo-300"
+                        ? "bg-[#FBDDD5] border-[#F6C9BE] text-[#8A210A]"
+                        : "bg-emerald-900/40 border-emerald-700/50 text-emerald-100"
                   )}>
                     <div className="flex items-center gap-1 opacity-90">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -1324,8 +1369,8 @@ export default function POS({ userProfile }: POSProps) {
               {/* Right Column: Cash Received Input & Big Validation Button */}
               <div className="md:col-span-6 flex flex-col justify-between gap-2">
                 {/* HIGH CONTRAST RECEIVED AMOUNT INPUT */}
-                <div className="bg-slate-800/80 border border-slate-750 rounded-xl p-2 flex flex-col gap-1 shadow-inner">
-                  <div className="flex justify-between items-center text-[9px] font-black text-emerald-400 uppercase tracking-wider">
+                <div className="flex flex-col gap-1 rounded-xl border border-slate-800 bg-slate-800/80 p-2">
+                  <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider text-emerald-300">
                     <span>Montant Reçu</span>
                     <button 
                       type="button"
@@ -1333,13 +1378,13 @@ export default function POS({ userProfile }: POSProps) {
                         setReceivedCash(cartTotal);
                         setReceivedCashInput(cartTotal.toFixed(3));
                       }}
-                      className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[8px] font-black uppercase tracking-widest rounded transition-colors cursor-pointer"
+                      className="min-h-11 rounded-full border border-emerald-600 bg-emerald-600 px-3 text-[8px] font-black uppercase tracking-widest text-white transition-colors cursor-pointer hover:bg-emerald-700"
                     >
                       Tout Payer
                     </button>
                   </div>
-                  <div className="flex items-center justify-between border-b border-slate-700 pb-0.5">
-                    <CreditCard className="w-4 h-4 text-emerald-500 mr-1.5 shrink-0" />
+                  <div className="flex items-center justify-between border-b border-slate-700 pb-1">
+                    <CreditCard className="mr-1.5 h-4 w-4 shrink-0 text-emerald-400" />
                     <input
                       type="text"
                       inputMode="decimal"
@@ -1375,9 +1420,9 @@ export default function POS({ userProfile }: POSProps) {
                         }
                       }}
                       placeholder="0.000"
-                      className="w-full bg-transparent text-right text-lg font-black font-mono text-emerald-400 focus:outline-none focus:ring-0 p-0 select-all"
+                      className="w-full select-all bg-transparent p-0 text-right font-mono text-lg font-bold tabular-nums text-emerald-300 focus:outline-none focus:ring-0"
                     />
-                    <span className="text-xs font-black text-emerald-500 ml-1 shrink-0">{currency}</span>
+                    <span className="ml-1 shrink-0 text-xs font-black text-emerald-300">{currency}</span>
                   </div>
                   {/* Presets de paiement rapide */}
                   <div className="flex gap-1 overflow-x-auto no-scrollbar justify-end">
@@ -1392,7 +1437,7 @@ export default function POS({ userProfile }: POSProps) {
                             return updated;
                           });
                         }}
-                        className="text-[8px] font-black bg-slate-700 hover:bg-slate-650 text-slate-200 px-1.5 py-0.5 rounded cursor-pointer"
+                        className="min-h-11 shrink-0 rounded-full border border-slate-700 bg-slate-700 px-3 text-[8px] font-black text-slate-100 cursor-pointer hover:bg-slate-600"
                       >
                         +{val} DT
                       </button>
@@ -1400,12 +1445,12 @@ export default function POS({ userProfile }: POSProps) {
                   </div>
                 </div>
 
-                {/* MAIN ACTIONS (Emerald + Credit buttons) */}
+                {/* MAIN ACTIONS */}
                 <div className="flex gap-2">
                   <button
                     onClick={() => validateSale(false)}
                     disabled={cart.length === 0 || isProcessing}
-                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-950/30 active:scale-[0.98] disabled:opacity-40 disabled:scale-100 disabled:shadow-none flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-4 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/20 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {isProcessing ? 'Traitement...' : (
                       <>
@@ -1428,7 +1473,7 @@ export default function POS({ userProfile }: POSProps) {
                     }}
                     disabled={cart.length === 0 || isProcessing}
                     title="Enregistrer la vente en crédit (client requis)"
-                    className="px-3 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-amber-950/30 active:scale-[0.98] disabled:opacity-40 disabled:scale-100 disabled:shadow-none flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="min-h-11 cursor-pointer rounded-full bg-amber-500 px-4 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <CreditCard className="w-4 h-4 shrink-0" />
                     Crédité
@@ -1440,16 +1485,17 @@ export default function POS({ userProfile }: POSProps) {
 
             {/* Warning de paiement pour client passager */}
             {!selectedClient && Math.abs(paidAmount - cartTotal) > 0.001 && (
-              <div className="text-[9px] text-rose-300 font-semibold bg-rose-950/40 border border-rose-900/60 rounded-lg p-2 flex items-center gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+              <div className="flex items-center gap-1.5 rounded-lg border border-[#F6C9BE] bg-[#FBDDD5] p-2 text-[9px] font-semibold text-[#8A210A]">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#B3261E]" />
                 <span>Le montant reçu doit correspondre exactement au montant total pour un client passager.</span>
               </div>
             )}
 
             {error && (
-              <div className="p-2 bg-rose-950/40 border border-rose-900/60 rounded-lg flex items-center gap-1.5 text-rose-300 text-[10px] font-semibold">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+              <div className="flex items-center gap-1.5 rounded-lg border border-[#F6C9BE] bg-[#FBDDD5] p-2 text-[10px] font-semibold text-[#8A210A]">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#B3261E]" />
                 <span className="leading-tight">{error}</span>
+                {!cashSession && !cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="ml-auto min-h-11 rounded-full bg-[#0A0A0A] px-3 text-white">Ouvrir</button>}
               </div>
             )}
           </div>
@@ -1460,28 +1506,28 @@ export default function POS({ userProfile }: POSProps) {
       {/* Credit Sale Modal */}
       {isCreditModalOpen && selectedClient && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white p-6 rounded-3xl shadow-2xl max-w-sm w-full border border-gray-100 scale-in duration-200">
+          <div className="w-full max-w-sm rounded-[24px] border border-[#E2E2DF] bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between mb-4">
               <div>
-                <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
-                  <CreditCard className="w-5 h-5 text-amber-600 shrink-0" />
+                <h3 className="flex items-center gap-2 font-display text-lg font-bold text-[#0A0A0A]">
+                  <CreditCard className="h-5 w-5 shrink-0 text-[#5C5C5C]" />
                   Vente à crédit
                 </h3>
-                <p className="text-xs text-gray-500 font-semibold mt-0.5">
-                  Client : <span className="text-gray-800">{selectedClient.name}</span>
+                <p className="mt-0.5 text-xs font-semibold text-[#5C5C5C]">
+                  Client : <span className="text-[#0A0A0A]">{selectedClient.name}</span>
                 </p>
               </div>
               <button
                 onClick={() => setIsCreditModalOpen(false)}
-                className="p-1.5 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                className="min-h-11 min-w-11 cursor-pointer rounded-full text-[#5C5C5C] transition-colors hover:bg-[#F4F4F2]"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4 flex items-center justify-between">
-              <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Total de la vente</span>
-              <span className="text-lg font-black text-gray-900">{cartTotal.toFixed(3)} {currency}</span>
+            <div className="mb-4 flex items-center justify-between rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] p-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#5C5C5C]">Total de la vente</span>
+              <span className="font-display text-lg font-bold tabular-nums text-[#0A0A0A]">{cartTotal.toFixed(3)} {currency}</span>
             </div>
 
             {/* Option 1 : tout créditer */}
@@ -1491,24 +1537,24 @@ export default function POS({ userProfile }: POSProps) {
                 validateSale(true, 0);
               }}
               disabled={isProcessing}
-              className="w-full py-2.5 mb-3 bg-amber-600 hover:bg-amber-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-amber-200 active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-1.5 cursor-pointer"
+              className="mb-3 flex min-h-11 w-full cursor-pointer items-center justify-center gap-1.5 rounded-full bg-[#0A0A0A] py-2.5 text-xs font-black uppercase tracking-wider text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-40"
             >
               <CreditCard className="w-4 h-4 shrink-0" />
               Créditer tout le montant
             </button>
 
             <div className="flex items-center gap-3 mb-3">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-[10px] font-black text-gray-400 uppercase">ou</span>
-              <div className="flex-1 h-px bg-gray-200" />
+              <div className="h-px flex-1 bg-[#E2E2DF]" />
+              <span className="text-[10px] font-black uppercase text-[#5C5C5C]">ou</span>
+              <div className="h-px flex-1 bg-[#E2E2DF]" />
             </div>
 
             {/* Option 2 : tranche payée + reste en crédit */}
-            <label className="block text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+            <label className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-[#5C5C5C]">
               Le client paie une tranche maintenant
             </label>
             <div className="relative mb-2">
-              <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Coins className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5C5C5C]" />
               <input
                 type="number"
                 inputMode="decimal"
@@ -1520,24 +1566,24 @@ export default function POS({ userProfile }: POSProps) {
                   setCreditModalError(null);
                 }}
                 placeholder="0.000"
-                className="w-full pl-9 pr-14 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-500"
+                className="w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] py-2.5 pl-9 pr-14 text-sm font-bold text-[#0A0A0A] focus:border-[#0A0A0A] focus:outline-none focus:ring-2 focus:ring-[#0A0A0A]/10"
               />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400">{currency}</span>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-[#5C5C5C]">{currency}</span>
             </div>
 
             {(() => {
               const tranche = parseFloat(creditPartialInput) || 0;
               const reste = Math.max(0, Math.round((cartTotal - tranche) * 1000) / 1000);
               return tranche > 0 && tranche < cartTotal ? (
-                <p className="text-[11px] font-bold text-gray-500 mb-3">
-                  Reste en crédit : <span className="text-amber-600 font-black">{reste.toFixed(3)} {currency}</span>
+                <p className="mb-3 text-[11px] font-bold text-[#5C5C5C]">
+                  Reste en crédit : <span className="font-black text-[#8A210A]">{reste.toFixed(3)} {currency}</span>
                 </p>
               ) : null;
             })()}
 
             {creditModalError && (
-              <div className="p-2 mb-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-1.5 text-rose-600 text-[11px] font-semibold">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <div className="mb-3 flex items-center gap-1.5 rounded-lg border border-[#F6C9BE] bg-[#FBDDD5] p-2 text-[11px] font-semibold text-[#8A210A]">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                 <span className="leading-tight">{creditModalError}</span>
               </div>
             )}
@@ -1557,7 +1603,7 @@ export default function POS({ userProfile }: POSProps) {
                 validateSale(true, tranche);
               }}
               disabled={isProcessing}
-              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-1.5 cursor-pointer"
+              className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-1.5 rounded-full border border-[#E2E2DF] bg-white py-2.5 text-xs font-black uppercase tracking-wider text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2] disabled:opacity-40"
             >
               <CheckCircle className="w-4 h-4 shrink-0" />
               Encaisser la tranche & créditer le reste
@@ -1569,18 +1615,18 @@ export default function POS({ userProfile }: POSProps) {
       {/* Success Overlay */}
       {saleSuccess && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-sm w-full border border-gray-100 scale-in duration-200">
-            <div className="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-6">
-              <CheckCircle className="w-12 h-12" />
+          <div className="w-full max-w-sm rounded-[24px] border border-[#E2E2DF] bg-white p-8 text-center shadow-2xl">
+            <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-[#F4F4F2] text-[#0A0A0A]">
+              <CheckCircle className="h-12 w-12" />
             </div>
-            <h3 className="text-2xl font-black text-gray-900 mb-2">Succès !</h3>
-            <p className="text-gray-500 mb-8 font-semibold">{saleSuccess}</p>
+            <h3 className="mb-2 font-display text-2xl font-bold text-[#0A0A0A]">Succès !</h3>
+            <p className="mb-8 font-semibold text-[#5C5C5C]">{saleSuccess}</p>
             
             <div className="space-y-3">
               {lastInvoice && (
                 <button 
                   onClick={handlePrint}
-                  className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-[#0A0A0A] py-3 font-bold text-white transition-colors hover:bg-[#2A2A2A]"
                 >
                   <Printer className="w-5 h-5" />
                   Imprimer Ticket
@@ -1589,7 +1635,7 @@ export default function POS({ userProfile }: POSProps) {
               {lastInvoice && (
                 <button 
                   onClick={() => downloadPDF(lastInvoice)}
-                  className="w-full py-3 bg-gray-100 text-gray-700 font-bold rounded-xl hover:bg-gray-200 transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-3xs"
+                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-full border border-[#E2E2DF] bg-white py-3 font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2]"
                 >
                   <FileText className="w-5 h-5" />
                   Télécharger Facture PDF
@@ -1600,7 +1646,7 @@ export default function POS({ userProfile }: POSProps) {
                   setSaleSuccess(null);
                   setLastInvoice(null);
                 }}
-                className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition-colors cursor-pointer shadow-sm"
+                className="min-h-11 w-full cursor-pointer rounded-full bg-[#0A0A0A] py-3 font-bold text-white transition-colors hover:bg-[#2A2A2A]"
               >
                 Nouvelle Vente
               </button>
@@ -1608,6 +1654,7 @@ export default function POS({ userProfile }: POSProps) {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

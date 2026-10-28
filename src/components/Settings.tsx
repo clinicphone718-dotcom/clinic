@@ -2,14 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import { db, auth } from '../firebase';
-import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { APP_NAME } from '../config/brand';
 import { StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType, hasMenuAccess } from '../App';
-import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck, Music2, Upload } from 'lucide-react';
+import { Edit2, X, Settings as SettingsIcon, CheckCircle2, Store, Save, Download, Trash2, Database, AlertTriangle, Calendar, Eye, FileText, KeyRound, Lock, ShieldCheck, Music2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import { can } from '../lib/permissions';
+import { normalizeFinancialSettings } from '../lib/financial';
+import { DEFAULT_MESSAGE_TEMPLATES, MESSAGE_TEMPLATE_OPTIONS } from '../lib/messages';
 import { useStartup } from './StartupProvider';
 import { adhkarLibrary } from '../data/adhkar';
 import { verses } from '../data/verses';
@@ -282,7 +283,7 @@ function AccountPasswordCard() {
           <input type="password" autoComplete="new-password" required minLength={8} value={confirmation} onChange={event => setConfirmation(event.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium normal-case tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" />
         </label>
         {message && <p role={message.success ? 'status' : 'alert'} className={`rounded-xl border p-3 text-xs font-semibold ${message.success ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-rose-100 bg-rose-50 text-rose-700'}`}>{message.text}</p>}
-        <button type="submit" disabled={saving || !currentPassword || newPassword.length < 8 || newPassword !== confirmation} className="min-h-10 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="submit" disabled={saving || !currentPassword || newPassword.length < 8 || newPassword !== confirmation} className="min-h-10 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-100 disabled:text-indigo-400">
           {saving ? 'Modification…' : 'Changer mon mot de passe'}
         </button>
       </form>
@@ -310,8 +311,8 @@ export default function Settings({
   const [startupAudioUrl, setStartupAudioUrl] = useState(startupConfig.audioUrl || '');
   const [startupSaving, setStartupSaving] = useState(false);
   const [startupMessage, setStartupMessage] = useState('');
-  const [audioUploading, setAudioUploading] = useState(false);
-  const audioFileInput = React.useRef<HTMLInputElement>(null);
+  const [startupAudioTestMessage, setStartupAudioTestMessage] = useState('');
+  const startupAudioPreview = React.useRef<HTMLAudioElement>(null);
   const welcomeChoices = [
     ...verses.map((verse) => ({ id: `verse:${verse.title}`, ...verse })),
     ...adhkarLibrary.map((adhkar) => ({ id: `dhikr:${adhkar.section}:${adhkar.title}`, ...adhkar })),
@@ -344,7 +345,7 @@ export default function Settings({
       return;
     }
     if (startupAudioUrl && !isDirectAudioUrl(startupAudioUrl)) {
-      setStartupMessage('Utilisez un lien HTTPS direct vers un fichier .mp3 ou .m4a.');
+      setStartupMessage('Utilisez un lien HTTPS direct vers un fichier .mp3, .m4a, .ogg ou .wav.');
       return;
     }
 
@@ -370,37 +371,23 @@ export default function Settings({
     }
   };
 
-  const uploadStartupAudio = async (file?: File) => {
-    if (!file) return;
-    if (!ownerId) {
-      setStartupMessage('Propriétaire du magasin introuvable.');
+  const testStartupAudio = () => {
+    setStartupAudioTestMessage('');
+    if (!isDirectAudioUrl(startupAudioUrl)) {
+      setStartupAudioTestMessage('Lien audio invalide : fournissez une URL HTTPS directe en .mp3, .m4a, .ogg ou .wav.');
       return;
     }
-    if (!/\.(mp3|m4a)$/i.test(file.name) || (file.type && !['audio/mpeg', 'audio/mp4', 'audio/x-m4a'].includes(file.type))) {
-      setStartupMessage('Choisissez un fichier audio .mp3 ou .m4a.');
+    const audio = startupAudioPreview.current;
+    if (!audio) {
+      setStartupAudioTestMessage('Lecteur audio indisponible.');
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      setStartupMessage('Le fichier audio ne doit pas dépasser 20 Mo.');
-      return;
-    }
-
-    setAudioUploading(true);
-    setStartupMessage('');
-    try {
-      const objectName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-      const audioRef = ref(getStorage(), `startup-audio/${ownerId}/${objectName}`);
-      const uploaded = await uploadBytes(audioRef, file, { contentType: file.type || 'audio/mpeg' });
-      const downloadUrl = await getDownloadURL(uploaded.ref);
-      setStartupAudioUrl(downloadUrl);
-      setStartupMessage('Fichier envoyé. Enregistrez les réglages pour l’activer.');
-    } catch (uploadError) {
-      console.error('Unable to upload startup audio:', uploadError);
-      setStartupMessage('Impossible de téléverser le fichier. Vérifiez que Firebase Storage est activé et autorisé.');
-    } finally {
-      setAudioUploading(false);
-      if (audioFileInput.current) audioFileInput.current.value = '';
-    }
+    audio.currentTime = 0;
+    void audio.play().then(() => {
+      setStartupAudioTestMessage('Lecture audio démarrée.');
+    }).catch(() => {
+      setStartupAudioTestMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.');
+    });
   };
 
   if (userProfile && !hasMenuAccess(userProfile, 'settings')) {
@@ -409,8 +396,8 @@ export default function Settings({
     return (
       <div className="space-y-6 max-w-4xl mx-auto">
         <div>
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            <SettingsIcon className="w-7 h-7 text-indigo-600 fill-indigo-100/40" />
+          <h1 className="flex items-center gap-2 font-display text-3xl font-black tracking-tight text-slate-900">
+            <SettingsIcon className="h-8 w-8 text-indigo-600 fill-indigo-100/40" />
             Paramètres
           </h1>
           <p className="text-xs text-slate-500 font-medium">
@@ -432,8 +419,10 @@ export default function Settings({
     currency: '',
     address: '',
     phone: '',
-    tva: 19,
-    tvaEnabled: true,
+    whatsappCountryCode: '216',
+    messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES },
+    tva: 0,
+    tvaEnabled: false,
     deleteCode: '',
     minStockAlert: 5
   });
@@ -560,7 +549,7 @@ export default function Settings({
           'Total TTC (DT)': s.total || 0,
           'Payé (DT)': s.paid || 0,
           'Dette (DT)': s.debt || 0,
-          'TVA (DT)': s.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': s.tva || 0 } : {}),
           'Facture associée': s.invoiceId || 'N/A',
           'Détail des articles': itemsString
         };
@@ -577,7 +566,7 @@ export default function Settings({
           'Total TTC (DT)': inv.total || 0,
           'Payé (DT)': inv.paid || 0,
           'Dette (DT)': inv.debt || 0,
-          'TVA (DT)': inv.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': inv.tva || 0 } : {}),
           'Détail des articles': itemsString
         };
       });
@@ -585,7 +574,9 @@ export default function Settings({
       const totalCA = salesInRange.reduce((sum, s) => sum + (s.total || 0), 0);
       const totalPaye = salesInRange.reduce((sum, s) => sum + (s.paid || 0), 0);
       const totalDette = salesInRange.reduce((sum, s) => sum + (s.debt || 0), 0);
-      const totalTva = salesInRange.reduce((sum, s) => sum + (s.tva || 0), 0);
+      const totalTva = storeFormData.tvaEnabled
+        ? salesInRange.reduce((sum, s) => sum + (s.tva || 0), 0)
+        : 0;
 
       const resume = [
         { 'Indicateur': 'Magasin', 'Valeur': storeFormData.storeName || 'Magasin' },
@@ -596,7 +587,9 @@ export default function Settings({
         { 'Indicateur': "Chiffre d'affaires total (DT)", 'Valeur': totalCA.toFixed(2) },
         { 'Indicateur': 'Total encaissé (DT)', 'Valeur': totalPaye.toFixed(2) },
         { 'Indicateur': 'Total dettes générées (DT)', 'Valeur': totalDette.toFixed(2) },
-        { 'Indicateur': 'Total TVA collectée (DT)', 'Valeur': totalTva.toFixed(2) },
+        ...(storeFormData.tvaEnabled
+          ? [{ 'Indicateur': 'Total TVA collectée (DT)', 'Valeur': totalTva.toFixed(3) }]
+          : []),
         { 'Indicateur': 'Date de génération', 'Valeur': fmtDateTime(new Date()) }
       ];
 
@@ -746,7 +739,7 @@ export default function Settings({
           'Total TTC (DT)': d.total || 0,
           'Montant payé (DT)': d.paid || 0,
           'Dette restante (DT)': d.debt || 0,
-          'Montant TVA (DT)': d.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'Montant TVA (DT)': d.tva || 0 } : {}),
           'ID Facture associée': d.invoiceId || 'N/A',
           'Détail des Articles': itemsString
         };
@@ -770,7 +763,7 @@ export default function Settings({
           'Total Facture (DT)': d.total || 0,
           'Payé (DT)': d.paid || 0,
           'Dette (DT)': d.debt || 0,
-          'TVA (DT)': d.tva || 0,
+          ...(storeFormData.tvaEnabled ? { 'TVA (DT)': d.tva || 0 } : {}),
           'Date de Facturation': formattedDate,
           'Articles': itemsString
         };
@@ -865,14 +858,17 @@ export default function Settings({
     const unsubscribeStore = onSnapshot(doc(db, 'settings', ownerId), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data() as StoreSettings;
-        setStoreSettings({ ...data, id: snapshot.id });
+        const financialSettings = normalizeFinancialSettings(data);
+        setStoreSettings({ ...data, ...financialSettings, id: snapshot.id });
         setStoreFormData({
           storeName: data.storeName || '',
           currency: data.currency || '',
           address: data.address || '',
           phone: data.phone || '',
-          tva: data.tva !== undefined ? data.tva : 19,
-          tvaEnabled: data.tvaEnabled !== false,
+          whatsappCountryCode: data.whatsappCountryCode || '216',
+          messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES, ...data.messageTemplates },
+          tva: financialSettings.tva || 0,
+          tvaEnabled: financialSettings.tvaEnabled === true,
           deleteCode: data.deleteCode || '',
           minStockAlert: data.minStockAlert !== undefined ? data.minStockAlert : 5
         });
@@ -881,8 +877,8 @@ export default function Settings({
           id: ownerId,
           storeName: APP_NAME,
           currency: 'DT',
-          tva: 19,
-          tvaEnabled: true,
+          tva: 0,
+          tvaEnabled: false,
           minStockAlert: 5
         } as StoreSettings);
         setStoreFormData({
@@ -890,8 +886,10 @@ export default function Settings({
           currency: 'DT',
           address: '',
           phone: '',
-          tva: 19,
-          tvaEnabled: true,
+          whatsappCountryCode: '216',
+          messageTemplates: { ...DEFAULT_MESSAGE_TEMPLATES },
+          tva: 0,
+          tvaEnabled: false,
           deleteCode: '',
           minStockAlert: 5
         });
@@ -911,7 +909,10 @@ export default function Settings({
     e.preventDefault();
     if (!ownerId) return;
     try {
-      await setDoc(doc(db, 'settings', ownerId), storeFormData);
+      await setDoc(doc(db, 'settings', ownerId), {
+        ...storeFormData,
+        tvaOptIn: storeFormData.tvaEnabled,
+      }, { merge: true });
       setSuccess('Paramètres du magasin enregistrés avec succès !');
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
@@ -1004,7 +1005,49 @@ export default function Settings({
                       placeholder="Ex: 71 000 000 ou 22 123 456"
                     />
                   </div>
+                  {userProfile?.role === 'admin' && (
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block font-bold">Indicatif téléphonique par défaut</label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-500">+</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          value={storeFormData.whatsappCountryCode}
+                          onChange={(e) => setStoreFormData({ ...storeFormData, whatsappCountryCode: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold transition-all outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
+                          placeholder="216"
+                        />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Par défaut : Tunisie (+216). Un numéro déjà international est conservé.</p>
+                    </div>
+                  )}
                 </div>
+
+                {userProfile?.role === 'admin' && (
+                  <section className="space-y-3 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                    <div>
+                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Modèles WhatsApp / SMS</h3>
+                      <p className="mt-1 text-[10px] text-slate-500">Variables disponibles : {'{client}'}, {'{appareil}'}, {'{numero}'}, {'{montant_restant}'}, {'{nom_magasin}'}.</p>
+                    </div>
+                    {MESSAGE_TEMPLATE_OPTIONS.map(({ key, label }) => (
+                      <label key={key} className="block space-y-1 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                        {label}
+                        <textarea
+                          value={storeFormData.messageTemplates[key]}
+                          onChange={(e) => setStoreFormData({
+                            ...storeFormData,
+                            messageTemplates: { ...storeFormData.messageTemplates, [key]: e.target.value },
+                          })}
+                          rows={3}
+                          maxLength={1000}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-700"
+                        />
+                      </label>
+                    ))}
+                  </section>
+                )}
 
                 <div className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-100 my-2">
                   <div>
@@ -1321,42 +1364,39 @@ export default function Settings({
             />
           </label>
 
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-            <label className="space-y-1 text-xs font-bold text-slate-600">
-              رابط URL للمقطع الصوتي
-              <input
-                type="url"
-                value={startupAudioUrl}
-                onChange={(event) => setStartupAudioUrl(event.target.value)}
-                placeholder="https://…/recitation.mp3"
-                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
-              />
-            </label>
-            <div className="flex items-end">
-              <input
-                ref={audioFileInput}
-                type="file"
-                accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a"
-                onChange={(event) => void uploadStartupAudio(event.target.files?.[0])}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => audioFileInput.current?.click()}
-                disabled={audioUploading}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 px-4 py-2.5 text-xs font-bold text-indigo-700 disabled:opacity-50 sm:w-auto"
-              >
-                <Upload className="h-4 w-4" />
-                {audioUploading ? 'Envoi…' : 'رفع ملف صوتي'}
-              </button>
-            </div>
+          <label className="block space-y-1 text-xs font-bold text-slate-600">
+            رابط URL للمقطع الصوتي (HTTPS direct : .mp3, .m4a, .ogg ou .wav)
+            <input
+              type="url"
+              value={startupAudioUrl}
+              onChange={(event) => setStartupAudioUrl(event.target.value)}
+              placeholder="https://…/recitation.mp3"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-medium"
+            />
+          </label>
+          <div className="space-y-2">
+            <button type="button" onClick={testStartupAudio} className="inline-flex min-h-10 items-center rounded-xl border border-indigo-200 px-4 py-2 text-xs font-bold text-indigo-700">
+              Tester la lecture
+            </button>
+            <audio
+              ref={startupAudioPreview}
+              controls
+              preload="none"
+              src={isDirectAudioUrl(startupAudioUrl) ? startupAudioUrl.trim() : undefined}
+              onError={() => setStartupAudioTestMessage('Fichier illisible ou inaccessible. Vérifiez le lien direct et les autorisations CORS de l’hébergeur.')}
+              className="w-full"
+            />
+            {startupAudioTestMessage && <p role="status" className="text-xs font-semibold text-slate-600">{startupAudioTestMessage}</p>}
           </div>
-          <p className="text-[11px] text-slate-500">Lien direct HTTPS en .mp3 ou .m4a. L’audio ne démarre qu’après le bouton « دخول » de l’écran d’accueil.</p>
+          <aside className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-950">
+            Hébergez gratuitement votre fichier audio avec le palier gratuit de Cloudflare R2 ou sur Internet Archive. Après l’envoi, copiez le lien public direct du fichier (et non la page de partage) ; l’hébergeur doit autoriser la lecture depuis le navigateur (CORS). Aucun fichier n’est téléversé dans Firebase.
+          </aside>
+          <p className="text-[11px] text-slate-500">L’audio ne démarre qu’après le bouton « دخول » de l’écran d’accueil.</p>
           {startupMessage && <p role="status" className="text-xs font-semibold text-indigo-700">{startupMessage}</p>}
           <button
             type="button"
             onClick={() => void saveStartupSettings()}
-            disabled={startupSaving || audioUploading}
+            disabled={startupSaving}
             className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
           >
             <Save className="h-4 w-4" />

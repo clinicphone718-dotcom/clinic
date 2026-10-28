@@ -25,13 +25,17 @@ import {
   WifiOff,
   Wrench,
   BookOpen,
+  CircleDollarSign,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { UserProfile, Note } from './types';
+import type { UserProfile, Note, CashSession as CashSessionRecord } from './types';
 import { getPendingOperations, syncPendingOperations } from './lib/offlineManager';
 import { hasMenuAccess } from './lib/permissions';
-import { APP_LOGO_URL, APP_NAME, APP_TAGLINE } from './config/brand';
+import BrandLogo from './components/BrandLogo';
+import { APP_LOGO_URL, APP_NAME } from './config/brand';
 import { ALLOW_SELF_SIGNUP } from './config/firebase';
+import { useCashSession } from './lib/cashSessions';
 export { hasMenuAccess } from './lib/permissions';
 
 const NAV_SECTIONS = [
@@ -39,16 +43,17 @@ const NAV_SECTIONS = [
     title: 'VENTE',
     items: [
       { id: 'dashboard', name: 'Tableau de bord', path: '/', icon: LayoutDashboard },
-      { id: 'pos', name: 'Vente (POS)', path: '/pos', icon: ShoppingCart },
-      { id: 'sales', name: 'Historique', path: '/sales', icon: History },
-      { id: 'invoices', name: 'Factures', path: '/invoices', icon: FileText },
+      { id: 'pos', name: 'Vente (Caisse)', path: '/pos', icon: ShoppingCart },
+      { id: 'sales', name: 'Historique ventes', path: '/sales', icon: History },
+      { id: 'invoices', name: 'Facturation', path: '/invoices', icon: FileText },
+      { id: 'invoices', name: 'Clôture de caisse', path: '/cash-session', icon: CircleDollarSign },
     ],
   },
   {
     title: 'ATELIER',
     items: [
-      { id: 'reparation', name: 'Partie Réparation', path: '/repairs', icon: Wrench },
-      { id: 'pieces', name: 'Pièces Détachées', path: '/parts', icon: Package },
+      { id: 'reparation', name: 'Réparations', path: '/repairs', icon: Wrench },
+      { id: 'pieces', name: 'Pièces détachées', path: '/parts', icon: Package },
     ],
   },
   {
@@ -69,6 +74,8 @@ const NAV_SECTIONS = [
     title: 'ADMINISTRATION',
     items: [
       { id: 'users', name: 'Utilisateurs', path: '/users', icon: UserCheck, adminOnly: true },
+      { id: 'reports', name: 'Rapports', path: '/reports', icon: BarChart3, adminOnly: true },
+      { id: 'expenses', name: 'Dépenses', path: '/expenses', icon: CircleDollarSign, adminOnly: true },
       { id: 'settings', name: 'Paramètres', path: '/settings', icon: SettingsIcon },
     ],
   },
@@ -108,6 +115,9 @@ import UsersManager from './components/Users';
 import Notes from './components/Notes';
 import Repairs from './components/Repairs';
 import Parts from './components/Parts';
+import Expenses from './components/Expenses';
+import Reports from './components/Reports';
+import CashSession from './components/CashSession';
 import { StartupProvider } from './components/StartupProvider';
 
 // Error Handling
@@ -199,7 +209,9 @@ function Sidebar({
   isOnline,
   pendingCount,
   syncing,
-  handleTriggerSync
+  handleTriggerSync,
+  cashSession,
+  cashSessionLoading,
 }: { 
   isOpen: boolean; 
   setIsOpen: (v: boolean) => void; 
@@ -211,6 +223,8 @@ function Sidebar({
   pendingCount: number;
   syncing: boolean;
   handleTriggerSync: () => void;
+  cashSession: CashSessionRecord | null;
+  cashSessionLoading: boolean;
 }) {
   const location = useLocation();
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
@@ -222,39 +236,29 @@ function Sidebar({
       {/* Mobile Backdrop */}
       {isOpen && (
         <div 
-          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 lg:hidden transition-opacity duration-300"
+          className="fixed inset-0 z-40 bg-[#20263A]/25 backdrop-blur-sm transition-opacity duration-300 lg:hidden"
           onClick={() => setIsOpen(false)}
         />
       )}
       
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-[min(19rem,calc(100vw-2rem))] border-r border-slate-200/70 bg-white/95 shadow-xl shadow-slate-900/5 backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 lg:w-64 lg:shadow-sm",
+        "fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-1rem))] border-r border-[#E6E9F2] bg-white text-[#20263A] shadow-xl shadow-[#20263A]/10 transition-transform duration-300 lg:translate-x-0 lg:w-72 lg:shadow-none",
         isOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         <div className="h-full flex flex-col">
-          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-5">
-            <h1 className="text-2xl font-black flex flex-col leading-none font-display">
-              <span className="flex items-center gap-2 tracking-tight">
-                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-7 w-7 rounded-lg object-cover" /> : (
-                <ShoppingCart className="w-7 h-7 text-indigo-600 fill-indigo-100/40 animate-pulse" />
-                )}
-                <span className="bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 bg-clip-text text-transparent">
-                  {APP_NAME}
-                </span>
-              </span>
-              <span className="text-[9px] font-black uppercase tracking-widest bg-gradient-to-r from-indigo-500 to-cyan-500 bg-clip-text text-transparent mt-1.5 font-sans">
-                {APP_TAGLINE}
-              </span>
-            </h1>
-            <button onClick={() => setIsOpen(false)} className="lg:hidden p-1.5 hover:bg-slate-50 rounded-lg transition-colors">
-              <X className="w-5 h-5 text-slate-400" />
+          <div className="flex items-center justify-between border-b border-[#E6E9F2] px-5 py-5">
+            <div className="min-w-0">
+              <BrandLogo variant="full" logoUrl={APP_LOGO_URL} />
+            </div>
+            <button onClick={() => setIsOpen(false)} aria-label="Fermer le menu" className="ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#5F667A] transition-colors hover:bg-[#F6F7FB] lg:hidden">
+              <X className="h-5 w-5" />
             </button>
           </div>
 
-          <nav className="flex-1 space-y-5 overflow-y-auto px-4 py-6">
+          <nav aria-label="Navigation principale" className="flex-1 space-y-3 overflow-y-auto px-4 py-5">
             {navSections.map(section => (
               <section key={section.title} aria-label={section.title}>
-                <h2 className="mb-2 px-3 text-[9px] font-black tracking-[0.16em] text-slate-400">{section.title}</h2>
+                <h2 className="px-3 pb-2 pt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-[#5F667A]">{section.title}</h2>
                 <div className="space-y-1">
                   {section.items.map((item) => {
                     const Icon = item.icon;
@@ -267,18 +271,19 @@ function Sidebar({
                         to={item.path}
                         onClick={() => setIsOpen(false)}
                         className={cn(
-                          "flex min-h-10 items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all duration-200 relative group",
+                                  "group relative flex min-h-11 items-center gap-3 rounded-2xl px-3 text-[13px] font-semibold transition-colors duration-160",
                           isActive
-                            ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/15"
-                            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                    ? "bg-indigo-600 font-bold text-white shadow-md shadow-indigo-600/20"
+                                    : "text-[#64748B] hover:bg-indigo-50 hover:text-slate-900"
                         )}
+                        aria-current={isActive ? 'page' : undefined}
                       >
-                        <Icon className={cn("h-4 w-4 transition-transform group-hover:scale-110", isActive ? "text-white" : "text-slate-400")} />
+                        <Icon className={cn("h-[18px] w-[18px] shrink-0", isActive ? "text-white" : "text-slate-400")} />
                         <span className="flex-1">{item.name}</span>
                         {item.id === 'notes' && todayNotesCount > 0 && (
                           <span className={cn(
                             "min-w-[18px] rounded-full px-2 py-0.5 text-center text-[10px] font-black",
-                            isActive ? "bg-white text-indigo-600" : "bg-rose-500 text-white"
+                            isActive ? "bg-white/20 text-white" : "bg-rose-50 text-rose-700"
                           )}>
                             {todayNotesCount}
                           </span>
@@ -292,36 +297,49 @@ function Sidebar({
           </nav>
 
           {/* PWA / Offline Status Cards in Sidebar */}
-          <div className="px-4 py-3 border-t border-slate-100/60 bg-slate-50/30 space-y-3">
+          <div className="space-y-3 px-4 py-3">
+            <div className="flex flex-col gap-3 rounded-2xl border border-[#E6E9F2] bg-[#F6F7FB] p-4">
+              <div className="flex items-center gap-2.5">
+                <span className={cn("h-2.5 w-2.5 rounded-full", cashSession ? "bg-[#168568]" : "bg-[#A4AABC]")} />
+                <span className="text-xs font-bold uppercase tracking-[0.06em] text-[#20263A]">{cashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}</span>
+              </div>
+              {cashSession && <p className="text-[12px] font-medium text-[#5F667A]">Session depuis {cashSession.openedAt?.toDate?.().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) || '—'}, par {userProfile?.name || userProfile?.email || 'Utilisateur'}</p>}
+              <Link to="/cash-session" onClick={() => setIsOpen(false)} className="flex min-h-11 items-center justify-center rounded-xl bg-[#5846E8] px-3 text-sm font-bold text-white transition-colors hover:bg-[#4937D3] focus-visible:outline-offset-2">
+                {cashSession ? 'Clôturer la caisse' : 'Ouvrir la caisse'}
+              </Link>
+            </div>
+          </div>
+
+          <div className="border-t border-[#E6E9F2] px-4 py-3">
             {/* Connection and Sync Status */}
             {!isOnline ? (
-              <div className="p-3 bg-amber-50/70 border border-amber-100 rounded-xl text-amber-800 text-xs">
-                <div className="flex items-center gap-2 font-black uppercase tracking-wider text-[10px] mb-1">
-                  <WifiOff className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+              <div className="rounded-xl border border-[#F2D9B6] bg-[#FFF6E9] p-3 text-xs text-[#67430F]">
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-[#67430F]">
+                  <WifiOff className="h-3.5 w-3.5 animate-pulse text-[#A96500]" />
                   Mode Hors-ligne
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500">
+                <p className="text-[11px] font-medium leading-relaxed text-[#67430F]">
                   Modifications sauvegardées localement. {pendingCount > 0 ? `${pendingCount} opération(s) en attente.` : 'Prêt pour reconnexion.'}
                 </p>
               </div>
             ) : pendingCount > 0 ? (
-              <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl text-indigo-800 text-xs">
-                <div className="flex items-center justify-between font-black uppercase tracking-wider text-[10px] mb-1">
+              <div className="rounded-xl border border-[#DCD8FF] bg-[#F3F1FF] p-3 text-xs text-[#4937D3]">
+                <div className="mb-1 flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
                   <span className="flex items-center gap-1.5">
-                    <RefreshCcw className={cn("w-3.5 h-3.5 text-indigo-500", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#5846E8]", syncing && "animate-spin")} />
                     Synchronisation
                   </span>
-                  <span className="bg-indigo-600 text-white px-1.5 py-0.5 rounded-full text-[9px]">
+                  <span className="rounded-full bg-[#5846E8] px-1.5 py-0.5 text-[9px] text-white">
                     {pendingCount}
                   </span>
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500 mb-2">
+                <p className="mb-2 text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Des modifications locales sont en attente d'envoi.
                 </p>
                 <button
                   disabled={syncing}
                   onClick={handleTriggerSync}
-                  className="w-full py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors"
+                  className="min-h-11 w-full rounded-lg border border-[#5846E8] px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#5846E8] transition-colors hover:bg-[#5846E8] hover:text-white disabled:opacity-50"
                 >
                   {syncing ? 'En cours...' : 'Synchroniser maintenant'}
                 </button>
@@ -330,16 +348,16 @@ function Sidebar({
 
             {/* Install Prompt for Android / Desktop */}
             {deferredPrompt && (
-              <div className="p-3 bg-gradient-to-br from-indigo-50/60 to-cyan-50/60 border border-indigo-100/60 rounded-xl text-indigo-950 text-xs shadow-xs">
-                <div className="font-black uppercase tracking-wider text-[10px] text-indigo-700 mb-1">
+              <div className="rounded-xl border border-[#E6E9F2] bg-white p-3 text-xs text-[#20263A]">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-[#20263A]">
                   ✨ Installer l'App
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500 mb-2.5">
+                <p className="mb-2.5 text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Lancez {APP_NAME} en plein écran directement depuis votre écran d'accueil.
                 </p>
                 <button
                   onClick={handleInstallApp}
-                  className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                  className="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#5846E8] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white transition-colors hover:bg-[#4937D3]"
                 >
                   <Package className="w-3.5 h-3.5" />
                   Installer maintenant
@@ -349,25 +367,25 @@ function Sidebar({
 
             {/* Install Prompt Guide for iOS */}
             {isIOS && !isStandalone && (
-              <div className="p-3 bg-gradient-to-br from-indigo-50/60 to-violet-50/60 border border-indigo-100/60 rounded-xl text-indigo-950 text-xs">
-                <div className="font-black uppercase tracking-wider text-[10px] text-indigo-700 mb-1">
+              <div className="rounded-xl border border-[#E6E9F2] bg-white p-3 text-xs text-[#20263A]">
+                <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-[#20263A]">
                   📲 Installer sur iPhone
                 </div>
-                <p className="text-[11px] leading-relaxed font-medium text-slate-500">
+                <p className="text-[11px] font-medium leading-relaxed text-[#5F667A]">
                   Appuyez sur <span className="font-bold">Partager</span> (<span className="text-[13px]">⎋</span>) puis sur <span className="font-bold">"Sur l'écran d'accueil"</span> (<span className="text-[13px]">⊕</span>).
                 </p>
               </div>
             )}
           </div>
 
-          <div className="border-t border-slate-100 bg-white/80 p-4">
-            <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-indigo-100 text-sm font-black text-indigo-700">
-                {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt="" className="h-full w-full object-cover" /> : (userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
+          <div className="border-t border-[#E6E9F2] p-4">
+            <div className="mb-3 flex items-center gap-3 px-1.5 py-1">
+              <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#F0EEFF] font-display text-base font-bold text-[#5846E8]">
+                {(userProfile?.name || userProfile?.email || 'U').slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-bold text-slate-800">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
-                <p className="mt-0.5 text-[10px] font-semibold text-slate-500">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
+                <p className="truncate text-sm font-bold text-[#20263A]">{userProfile?.name || userProfile?.email || 'Utilisateur'}</p>
+                <p className="mt-0.5 text-xs font-medium text-[#5F667A]">{userProfile?.role === 'admin' ? 'Administrateur' : 'Utilisateur'}</p>
               </div>
             </div>
             <button
@@ -377,9 +395,9 @@ function Sidebar({
                 await signOut(auth);
                 window.location.reload();
               }}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-xs uppercase tracking-wider font-extrabold text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors"
+              className="flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-3 text-xs font-extrabold uppercase tracking-wider text-rose-600 transition-colors hover:bg-rose-50 hover:text-rose-700"
             >
-              <LogOut className="w-4 h-4 text-red-500" />
+              <LogOut className="h-4 w-4 text-[#7B8294]" />
               Déconnexion
             </button>
           </div>
@@ -436,6 +454,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [todayNotes, setTodayNotes] = useState<Note[]>([]);
   const [showNotesPopover, setShowNotesPopover] = useState(false);
+  const [headerNotifications, setHeaderNotifications] = useState({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+  const [headerNotificationError, setHeaderNotificationError] = useState('');
 
   // Offline status & synchronization states
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -447,6 +467,7 @@ export default function App() {
     () => window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as any).standalone),
   );
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const { session: activeCashSession, loading: cashSessionLoading } = useCashSession(userProfile);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -569,6 +590,101 @@ export default function App() {
   }, [user, userProfile]);
 
   useEffect(() => {
+    if (!auth.currentUser || !userProfile) {
+      setHeaderNotifications({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+      setHeaderNotificationError('');
+      return;
+    }
+    setHeaderNotifications({ lowStock: 0, readyRepairs: 0, unpaidSales: 0, unpaidRepairs: 0 });
+    setHeaderNotificationError('');
+
+    const ownerId = userProfile.role === 'admin'
+      ? userProfile.uid
+      : userProfile.ownerId || userProfile.uid;
+    const canViewStock = hasMenuAccess(userProfile, 'products');
+    const canViewRepairs = hasMenuAccess(userProfile, 'reparation');
+    const canViewSales = hasMenuAccess(userProfile, 'sales') || hasMenuAccess(userProfile, 'invoices');
+    let products: Array<Record<string, any>> = [];
+    let minStockAlert = 5;
+    const updateLowStock = () => {
+      const lowStock = products.filter(product => {
+        if (product.inventoryType === 'service') return false;
+        const threshold = Number.isFinite(Number(product.lowStockAlert)) && product.lowStockAlert !== undefined && product.lowStockAlert !== null
+          ? Number(product.lowStockAlert)
+          : minStockAlert;
+        return (Number(product.stock) || 0) <= threshold;
+      }).length;
+      setHeaderNotifications(current => ({ ...current, lowStock }));
+    };
+    const subscriptions: Array<() => void> = [];
+
+    if (canViewStock) {
+      subscriptions.push(onSnapshot(
+        query(collection(db, 'products'), where('ownerId', '==', ownerId)),
+        snapshot => {
+          products = snapshot.docs.map(item => item.data());
+          updateLowStock();
+        },
+        () => {
+          setHeaderNotificationError('Impossible de charger les alertes de stock.');
+          console.error('Unable to load store-scoped stock notifications.');
+        },
+      ));
+      subscriptions.push(onSnapshot(doc(db, 'settings', ownerId), snapshot => {
+        if (snapshot.exists()) {
+          const configured = Number(snapshot.data().minStockAlert);
+          minStockAlert = Number.isFinite(configured) && configured >= 0 ? configured : 5;
+          updateLowStock();
+        }
+      }, () => {
+        setHeaderNotificationError('Impossible de charger le seuil d’alerte de stock.');
+        console.error('Unable to load the store stock-alert threshold.');
+      }));
+    } else {
+      setHeaderNotifications(current => ({ ...current, lowStock: 0 }));
+    }
+
+    if (canViewRepairs) {
+      const repairsQuery = userProfile.role === 'admin'
+        ? query(collection(db, 'repairs'), where('ownerId', '==', ownerId))
+        : query(collection(db, 'repairs'), where('ownerId', '==', ownerId), where('costsSeparated', '==', true));
+      subscriptions.push(onSnapshot(repairsQuery, snapshot => {
+        const records = snapshot.docs.map(item => item.data());
+        setHeaderNotifications(current => ({
+          ...current,
+          readyRepairs: records.filter(repair => repair.status === 'termine').length,
+          unpaidRepairs: records.filter(repair => Number(repair.debt) > 0).length,
+        }));
+      }, () => {
+        setHeaderNotificationError('Impossible de charger les alertes de réparations.');
+        console.error('Unable to load store-scoped repair notifications.');
+      }));
+    } else {
+      setHeaderNotifications(current => ({ ...current, readyRepairs: 0 }));
+    }
+
+    if (canViewSales) {
+      subscriptions.push(onSnapshot(
+        query(collection(db, 'sales'), where('ownerId', '==', ownerId)),
+        snapshot => {
+          setHeaderNotifications(current => ({
+            ...current,
+            unpaidSales: snapshot.docs.filter(item => Number(item.data().debt) > 0).length,
+          }));
+        },
+        () => {
+          setHeaderNotificationError('Impossible de charger les alertes d’impayés.');
+          console.error('Unable to load store-scoped unpaid-sale notifications.');
+        },
+      ));
+    } else {
+      setHeaderNotifications(current => ({ ...current, unpaidSales: 0 }));
+    }
+
+    return () => subscriptions.forEach(unsubscribe => unsubscribe());
+  }, [userProfile]);
+
+  useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
     let isMounted = true;
     const startProfileListener = (uid: string, isFirebaseUser: boolean) => {
@@ -677,6 +793,18 @@ export default function App() {
     };
   }, []);
 
+  const canViewHeaderNotifications = hasMenuAccess(userProfile, 'notes') ||
+    hasMenuAccess(userProfile, 'products') ||
+    hasMenuAccess(userProfile, 'reparation') ||
+    hasMenuAccess(userProfile, 'sales') ||
+    hasMenuAccess(userProfile, 'invoices');
+  const headerNotificationItems = [
+    { id: 'lowStock', label: 'Articles sous le seuil de stock', count: headerNotifications.lowStock, path: '/products', color: 'text-rose-700 bg-rose-50' },
+    { id: 'readyRepairs', label: 'Réparations prêtes à être récupérées', count: headerNotifications.readyRepairs, path: '/repairs', color: 'text-amber-700 bg-amber-50' },
+    { id: 'unpaid', label: 'Ventes ou réparations avec impayé', count: headerNotifications.unpaidSales + headerNotifications.unpaidRepairs, path: hasMenuAccess(userProfile, 'sales') ? '/sales' : '/repairs', color: 'text-indigo-700 bg-indigo-50' },
+  ].filter(item => item.count > 0);
+  const headerNotificationCount = todayNotes.length + headerNotificationItems.reduce((sum, item) => sum + item.count, 0);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -698,7 +826,7 @@ export default function App() {
     <ErrorBoundary>
       <Router>
         <StartupProvider userProfile={userProfile} online={isOnline}>
-        <div className="min-h-screen bg-slate-50/50 flex" onClick={() => {
+        <div className="flex min-h-screen bg-[#F6F7FB]" onClick={() => {
           if (showNotesPopover) setShowNotesPopover(false);
         }}>
           <Sidebar 
@@ -712,27 +840,40 @@ export default function App() {
             pendingCount={pendingCount}
             syncing={syncing}
             handleTriggerSync={handleTriggerSync}
+            cashSession={activeCashSession}
+            cashSessionLoading={cashSessionLoading}
           />
           
-          <main className="flex-1 lg:pl-64 min-h-screen flex flex-col">
-            <header className="h-16 bg-white/80 backdrop-blur-md border-b border-slate-100 flex items-center justify-between px-4 lg:px-8 sticky top-0 z-30 shadow-xs">
+          <main className="flex min-h-screen flex-1 flex-col lg:pl-72">
+            <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-2 border-b border-[#E6E9F2] bg-white px-4 py-3 text-[#1E293B] lg:px-8">
               <button 
                 onClick={() => setSidebarOpen(true)}
-                className="lg:hidden p-2 text-slate-500 hover:bg-slate-50 rounded-xl transition-colors"
+                aria-label="Ouvrir le menu"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[#E6E9F2] bg-white text-[#64748B] transition-colors hover:bg-[#F8F9FD] lg:hidden"
               >
-                <Menu className="w-5 h-5" />
+                <Menu className="h-5 w-5" />
               </button>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 lg:hidden">
+                <BrandLogo variant="icon" logoUrl={APP_LOGO_URL} className="h-9 w-9 rounded-xl p-2" />
+                <div className="min-w-0">
+                  <p className="truncate bg-gradient-to-r from-indigo-600 to-cyan-500 bg-clip-text font-display text-[15px] font-extrabold leading-tight tracking-tight text-transparent">{APP_NAME}</p>
+                  <p className="flex items-center gap-1.5 text-[10px] font-semibold text-[#5F667A]">
+                  <span className={cn("h-2 w-2 rounded-full", activeCashSession ? "bg-[#168568]" : "bg-[#A4AABC]")} />
+                  {activeCashSession ? 'Caisse ouverte' : cashSessionLoading ? 'Chargement de la caisse…' : 'Aucune caisse ouverte'}
+                  </p>
+                </div>
+              </div>
 
               {/* Online/Offline Status Indicator */}
-              <div className="flex items-center gap-2">
+              <div className="hidden items-center gap-2 lg:flex">
                 {isOnline ? (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[10px] font-black uppercase tracking-wider text-emerald-700 font-mono animate-in fade-in duration-300">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-emerald-50 px-3.5 text-[11px] font-bold uppercase tracking-[0.08em] text-emerald-800">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-600" />
                     <span className="hidden sm:inline">En ligne</span>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 border border-rose-200 rounded-xl text-[10px] font-black uppercase tracking-wider text-rose-700 font-mono animate-pulse">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mr-0.5 animate-ping" />
+                  <div className="flex min-h-10 items-center gap-2 rounded-full bg-rose-50 px-3.5 text-[11px] font-bold uppercase tracking-[0.08em] text-rose-800">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-rose-600" />
                     <span>Hors ligne</span>
                   </div>
                 )}
@@ -742,85 +883,97 @@ export default function App() {
                     onClick={handleTriggerSync}
                     disabled={syncing || !isOnline}
                     className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-[10px] font-black uppercase tracking-wider transition-all",
+                      "flex min-h-10 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all",
                       isOnline
-                        ? "bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800 shadow-3xs cursor-pointer"
-                        : "bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed"
+                        ? "cursor-pointer border-[#E6E9F2] bg-white text-[#5F667A] hover:bg-[#F6F7FB]"
+                        : "cursor-not-allowed border-[#E6E9F2] bg-[#F6F7FB] text-[#5F667A]"
                     )}
                     title={isOnline ? "Des opérations sont en attente de synchronisation. Cliquez pour synchroniser." : "Les opérations seront synchronisées dès le retour de la connexion."}
                   >
-                    <RefreshCcw className={cn("w-3.5 h-3.5 text-amber-600", syncing && "animate-spin")} />
+                    <RefreshCcw className={cn("h-3.5 w-3.5 text-[#5846E8]", syncing && "animate-spin")} />
                     <span>{pendingCount} en attente</span>
                   </button>
                 )}
               </div>
               
               {/* Interactive Date & Notes Notification Badge widget */}
-              <div className="flex items-center gap-2 lg:gap-3.5 ml-2 sm:ml-4 relative" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-black text-slate-700 shadow-3xs font-mono">
-                  <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+              <div className="relative ml-auto flex items-center gap-2 lg:ml-4 lg:gap-3.5" onClick={(e) => e.stopPropagation()}>
+                <div className="hidden min-h-10 items-center gap-2 rounded-full border border-[#E6E9F2] bg-white px-3.5 font-mono text-[11px] font-medium text-[#64748B] lg:flex">
+                  <Calendar className="h-4 w-4 text-[#5846E8]" />
                   <span>{getFormattedDate()}</span>
                 </div>
 
-                {hasMenuAccess(userProfile, 'notes') ? (
+                {canViewHeaderNotifications ? (
                 <div className="relative">
                   <button
                     onClick={() => setShowNotesPopover(!showNotesPopover)}
                     className={cn(
-                      "p-2 rounded-xl border transition-all duration-300 relative cursor-pointer",
-                      todayNotes.length > 0
-                        ? "bg-amber-50 hover:bg-amber-100 border-amber-200/60 text-amber-600 shadow-sm"
-                        : "bg-slate-50 hover:bg-slate-100 border-slate-100 text-slate-400"
+                      "relative flex h-11 w-11 items-center justify-center rounded-full border transition-colors duration-300",
+                      headerNotificationCount > 0
+                        ? "border-[#E6E9F2] bg-white text-[#20263A] hover:bg-[#F6F7FB]"
+                        : "border-[#E6E9F2] bg-white text-[#5F667A] hover:bg-[#F6F7FB]"
                     )}
-                    title={todayNotes.length > 0 ? `${todayNotes.length} mémo(s) pour aujourd'hui !` : "Aucun mémo aujourd'hui"}
+                    title={headerNotificationCount > 0 ? `${headerNotificationCount} notification(s)` : "Aucune notification"}
+                    aria-label={`Notifications${headerNotificationCount ? ` (${headerNotificationCount})` : ''}`}
                   >
-                    <Bell className={cn("w-4 h-4", todayNotes.length > 0 && "animate-bounce duration-1000")} />
-                    {todayNotes.length > 0 && (
-                      <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-[9px] text-white font-black rounded-full flex items-center justify-center border-2 border-white shadow-xs">
-                        {todayNotes.length}
+                    <Bell className="h-[18px] w-[18px]" />
+                    {headerNotificationCount > 0 && (
+                      <span className="absolute right-1 top-1 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#D94B55] px-1 text-[10px] font-bold text-white">
+                        {headerNotificationCount}
                       </span>
                     )}
                   </button>
 
-                  {/* Dropdown Popover with real-time notes */}
                   {showNotesPopover && (
-                    <div className="absolute left-0 mt-2.5 w-76 sm:w-80 bg-white border border-slate-100 rounded-2xl shadow-xl z-50 p-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                      <div className="flex items-center justify-between border-b border-slate-50 pb-2.5 mb-2.5">
-                        <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                          <StickyNote className="w-4 h-4 text-indigo-500 animate-pulse" />
-                          Mémos d'aujourd'hui
+                    <div className="absolute left-0 z-50 mt-2.5 w-76 rounded-2xl border border-[#E6E9F2] bg-white p-4 shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 sm:w-80">
+                      <div className="mb-2.5 flex items-center justify-between border-b border-[#E6E9F2] pb-2.5">
+                        <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#20263A]">
+                          <Bell className="h-4 w-4 text-[#5846E8]" />
+                          Notifications
                         </span>
-                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md text-slate-500 bg-slate-50 border border-slate-100">
-                          {todayNotes.length} actif{todayNotes.length > 1 ? 's' : ''}
+                        <span className="rounded-md border border-[#E6E9F2] bg-[#F6F7FB] px-2 py-0.5 text-[10px] font-black uppercase text-[#5F667A]">
+                          {headerNotificationCount} active{headerNotificationCount > 1 ? 's' : ''}
                         </span>
                       </div>
 
                       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {todayNotes.length === 0 ? (
-                          <div className="text-center py-4 text-slate-400">
-                            <CheckCircle className="w-7 h-7 text-emerald-400 mx-auto mb-1.5" />
-                            <p className="text-[10px] font-[900] uppercase tracking-wide text-slate-500">Tout est en ordre</p>
-                            <p className="text-[9px] font-semibold text-slate-400 mt-0.5">Aucun mémo pour aujourd’hui.</p>
+                        {headerNotificationError && <p role="alert" className="rounded-lg bg-[#FCEAEC] p-2 text-[10px] font-semibold text-[#992C36]">{headerNotificationError}</p>}
+                        {headerNotificationItems.map(item => (
+                          <Link key={item.id} to={item.path} onClick={() => setShowNotesPopover(false)}
+                            className={cn("flex items-center justify-between gap-3 rounded-xl p-2.5 text-xs font-semibold hover:opacity-85", item.color)}>
+                            <span>{item.label}</span>
+                            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black">{item.count}</span>
+                          </Link>
+                        ))}
+                        {hasMenuAccess(userProfile, 'notes') && (
+                          <div className="border-t border-[#E6E9F2] pt-2">
+                            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-[#5F667A]"><StickyNote className="h-3.5 w-3.5 text-[#5846E8]" /> Mémos d’aujourd’hui</p>
+                            {todayNotes.length === 0 ? <p className="px-1 text-[10px] text-[#5F667A]">Aucun mémo pour aujourd’hui.</p> : todayNotes.map(note => (
+                              <div key={note.id} className="mb-2 rounded-xl border border-[#E6E9F2] bg-[#F6F7FB] p-2.5">
+                                <p className="text-xs font-extrabold text-[#20263A]">{note.title}</p>
+                                <p className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-[#5F667A]">{note.content}</p>
+                              </div>
+                            ))}
                           </div>
-                        ) : (
-                          todayNotes.map((note) => (
-                            <div key={note.id} className="p-2.5 rounded-xl bg-slate-50/50 border border-slate-100/80 hover:border-indigo-100 hover:bg-indigo-50/10 transition-colors">
-                              <p className="text-xs font-extrabold text-slate-800 tracking-tight">{note.title}</p>
-                              <p className="text-[10px] text-slate-500 font-medium mt-1 line-clamp-3 leading-relaxed">{note.content}</p>
-                            </div>
-                          ))
                         )}
+                        {headerNotificationItems.length === 0 && todayNotes.length === 0 && !headerNotificationError ? (
+                          <div className="py-4 text-center text-[#5F667A]">
+                            <CheckCircle className="mx-auto mb-1.5 h-7 w-7 text-[#168568]" />
+                            <p className="text-[10px] font-[900] uppercase tracking-wide text-[#5F667A]">Tout est en ordre</p>
+                            <p className="mt-0.5 text-[9px] font-semibold text-[#5F667A]">Aucune notification à traiter.</p>
+                          </div>
+                        ) : null}
                       </div>
 
-                      <div className="border-t border-slate-50 mt-3 pt-2.5 text-center">
+                      {hasMenuAccess(userProfile, 'notes') && <div className="mt-3 border-t border-[#E6E9F2] pt-2.5 text-center">
                         <Link
                           to="/notes"
                           onClick={() => setShowNotesPopover(false)}
-                          className="inline-flex items-center justify-center w-full py-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-700 hover:to-indigo-600 text-white text-[10px] uppercase tracking-wider font-extrabold rounded-xl transition-all shadow-md shadow-indigo-600/10"
+                          className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-[#5846E8] py-2 text-[10px] font-extrabold uppercase tracking-wider text-white transition-colors hover:bg-[#4937D3]"
                         >
                           Gérer tous les mémos
                         </Link>
-                      </div>
+                      </div>}
                     </div>
                   )}
                 </div>
@@ -830,34 +983,47 @@ export default function App() {
                     aria-label="Notifications"
                     title="Notifications"
                     disabled
-                    className="p-2 rounded-xl border border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed"
+                    className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full border border-[#E6E9F2] bg-white text-[#5F667A]"
                   >
                     <Bell className="w-4 h-4" />
                   </button>
                 )}
               </div>
 
-              <div className="flex-1"></div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-slate-500 font-semibold hidden sm:block bg-slate-100 px-3 py-1 rounded-full">{user.email}</span>
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center text-white font-black font-display text-sm shadow-md shadow-indigo-600/15">
-                  {APP_LOGO_URL ? <img src={APP_LOGO_URL} alt={APP_NAME} className="h-full w-full rounded-xl object-cover" /> : user.email?.[0].toUpperCase()}
+              {hasMenuAccess(userProfile, 'pos') && (
+                <Link
+                  to="/pos"
+                  aria-label="Ouvrir la caisse"
+                  title="Ouvrir la caisse"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 transition-colors hover:bg-indigo-700"
+                >
+                  <CircleDollarSign className="h-5 w-5" />
+                </Link>
+              )}
+
+              <div className="hidden items-center gap-2.5 lg:flex">
+                <span className="max-w-56 truncate text-[12px] font-medium text-[#5F667A]">{user.email}</span>
+                <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-[#F0EEFF] text-sm font-bold text-[#5846E8]">
+                  {(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}
                 </div>
               </div>
             </header>
  
-            <div className="mx-auto w-full max-w-[1800px] flex-1 p-4 lg:p-8">
+            <div className="mx-auto w-full max-w-[1600px] flex-1 p-4 lg:px-10 lg:py-7">
               <Routes>
-                <Route path="/" element={hasMenuAccess(userProfile, 'dashboard') ? <Dashboard userProfile={userProfile} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
+                <Route path="/" element={getFirstAccessiblePath(userProfile) === '/' ? <Dashboard userProfile={userProfile} cashSession={activeCashSession} /> : <Navigate to={getFirstAccessiblePath(userProfile)} replace />} />
                 <Route path="/products" element={hasMenuAccess(userProfile, 'products') ? <Products userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/clients" element={hasMenuAccess(userProfile, 'clients') ? <Clients userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/pos" element={hasMenuAccess(userProfile, 'pos') ? <POS userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/cash-session" element={hasMenuAccess(userProfile, 'pos') || hasMenuAccess(userProfile, 'invoices') ? <CashSession userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/sales" element={hasMenuAccess(userProfile, 'sales') ? <Sales userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/invoices" element={hasMenuAccess(userProfile, 'invoices') ? <Invoices userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/repairs" element={hasMenuAccess(userProfile, 'reparation') ? <Repairs userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/parts" element={hasMenuAccess(userProfile, 'pieces') ? <Parts userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/notes" element={hasMenuAccess(userProfile, 'notes') ? <Notes userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/users" element={userProfile?.role === 'admin' && hasMenuAccess(userProfile, 'users') ? <UsersManager userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/expenses" element={userProfile?.role === 'admin' ? <Expenses userProfile={userProfile} /> : <Navigate to="/" replace />} />
+                <Route path="/reports" element={isAdminOwner(userProfile) ? <Reports userProfile={userProfile} /> : <Navigate to="/" replace />} />
                 <Route path="/startup" element={<Navigate to="/settings#startup-settings" replace />} />
                 {/* /settings accessible à tous : le composant Settings n'affiche que la carte "Mon code de sécurité" aux utilisateurs sans permission */}
                 <Route path="/settings" element={<Settings

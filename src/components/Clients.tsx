@@ -1,17 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy, where, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy, where, getDocs, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { Client, StoreSettings, UserProfile } from '../types';
 import { handleFirestoreError, OperationType } from '../App';
 import { Plus, Search, Edit2, Trash2, X, Phone, MapPin, Wallet, Coins, AlertCircle, CheckCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { can, hasMenuAccess } from '../lib/permissions';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
+import MessageComposer from './MessageComposer';
 
 interface ClientsProps {
   userProfile: UserProfile | null;
 }
 
 export default function Clients({ userProfile }: ClientsProps) {
+  const navigate = useNavigate();
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [clients, setClients] = useState<Client[]>([]);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,6 +35,8 @@ export default function Clients({ userProfile }: ClientsProps) {
   const [settlingClient, setSettlingClient] = useState<Client | null>(null);
   const [settleAmountInput, setSettleAmountInput] = useState('');
   const [settleAmount, setSettleAmount] = useState<number>(0);
+  const [settleMode, setSettleMode] = useState('Espèces');
+  const [settleError, setSettleError] = useState('');
 
   // Form state
   const [formData, setFormData] = useState({
@@ -135,6 +142,8 @@ export default function Clients({ userProfile }: ClientsProps) {
     setSettlingClient(client);
     setSettleAmountInput('');
     setSettleAmount(0);
+    setSettleMode('Espèces');
+    setSettleError('');
     setIsSettleModalOpen(true);
   };
 
@@ -146,9 +155,17 @@ export default function Clients({ userProfile }: ClientsProps) {
   const handleSettleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!settlingClient) return;
+    if (!cashSession || cashSessionLoading) {
+      setSettleError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant d’encaisser une dette.');
+      return;
+    }
+    if (!Number.isFinite(settleAmount) || settleAmount <= 0 || settleAmount > settlingClient.debt) {
+      setSettleError('Le montant du règlement doit être supérieur à zéro et ne pas dépasser la dette.');
+      return;
+    }
     try {
-      const newDebt = Math.max(0, settlingClient.debt - settleAmount);
-
       // Répartir le règlement sur les ventes impayées du client (les plus anciennes d'abord),
       // afin que l'historique des transactions reflète le paiement au lieu de rester "dette".
       const salesSnap = await getDocs(query(
@@ -169,32 +186,56 @@ export default function Clients({ userProfile }: ClientsProps) {
         .filter(s => (s.data.debt || 0) > 0.0005)
         .sort((a, b) => parseSaleDate(a.data.date) - parseSaleDate(b.data.date));
 
-      const batch = writeBatch(db);
-      let remaining = settleAmount;
-
-      for (const s of unpaidSales) {
-        if (remaining <= 0.0005) break;
-        const saleDebt = s.data.debt || 0;
-        const payment = Math.min(remaining, saleDebt);
-        const newSaleDebt = Math.round((saleDebt - payment) * 1000) / 1000;
-        const newSalePaid = Math.round(((s.data.paid || 0) + payment) * 1000) / 1000;
-
-        batch.update(s.ref, { debt: newSaleDebt, paid: newSalePaid });
-
-        // Synchroniser la facture liée (elle duplique paid/debt)
-        if (s.data.invoiceId) {
-          batch.update(doc(db, 'invoices', s.data.invoiceId), { debt: newSaleDebt, paid: newSalePaid });
+      const clientRef = doc(db, 'clients', settlingClient.id);
+      const paymentRef = doc(collection(db, 'client_debts'));
+      await runTransaction(db, async transaction => {
+        const activeSession = await requireOpenCashSession(
+          transaction,
+          userProfile?.uid || auth.currentUser?.uid || '',
+          ownerId || '',
+        );
+        const clientSnapshot = await transaction.get(clientRef);
+        const saleSnapshots = await Promise.all(unpaidSales.map(sale => transaction.get(sale.ref)));
+        if (!clientSnapshot.exists()) throw new Error('Client introuvable.');
+        const currentDebt = Number(clientSnapshot.data().debt) || 0;
+        if (settleAmount > currentDebt + 0.001) {
+          throw new Error('La dette a changé. Actualisez le montant avant de réessayer.');
         }
-
-        remaining = Math.round((remaining - payment) * 1000) / 1000;
-      }
-
-      batch.update(doc(db, 'clients', settlingClient.id), { debt: newDebt });
-
-      await batch.commit();
+        let remaining = settleAmount;
+        saleSnapshots.forEach((saleSnapshot, index) => {
+          if (!saleSnapshot.exists() || remaining <= 0.0005) return;
+          const sale = saleSnapshot.data();
+          const saleDebt = Number(sale.debt) || 0;
+          if (saleDebt <= 0) return;
+          const payment = Math.min(remaining, saleDebt);
+          const newSaleDebt = Math.round((saleDebt - payment) * 1000) / 1000;
+          const newSalePaid = Math.round(((Number(sale.paid) || 0) + payment) * 1000) / 1000;
+          transaction.update(unpaidSales[index].ref, { debt: newSaleDebt, paid: newSalePaid });
+          if (sale.invoiceId) {
+            transaction.update(doc(db, 'invoices', sale.invoiceId), { debt: newSaleDebt, paid: newSalePaid });
+          }
+          remaining = Math.round((remaining - payment) * 1000) / 1000;
+        });
+        transaction.update(clientRef, { debt: Math.max(0, currentDebt - settleAmount) });
+        transaction.set(paymentRef, {
+          ownerId,
+          clientId: settlingClient.id,
+          type: 'encaissement_dette',
+          reference: settlingClient.name,
+          amount: settleAmount,
+          mode: settleMode,
+          date: serverTimestamp(),
+          by: userProfile?.uid || auth.currentUser?.uid,
+          sessionId: activeSession.id,
+        });
+        addCashSessionTotals(transaction, activeSession, {
+          debtsCollected: settleAmount,
+          debtsCollectedCash: settleMode === 'Espèces' ? settleAmount : 0,
+        });
+      });
       closeSettleModal();
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'clients');
+      setSettleError(error instanceof Error ? error.message : 'Impossible d’enregistrer le règlement.');
     }
   };
 
@@ -305,6 +346,15 @@ export default function Clients({ userProfile }: ClientsProps) {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <MessageComposer
+                          phone={client.phone}
+                          clientName={client.name}
+                          montantRestant={`${(Number(client.debt) || 0).toFixed(3)} ${storeSettings?.currency || 'DT'}`}
+                          nomMagasin={storeSettings?.storeName || ''}
+                          indicatif={storeSettings?.whatsappCountryCode || '216'}
+                          templates={storeSettings?.messageTemplates}
+                          defaultTemplate="rappel_paiement"
+                        />
                         {canCash && client.debt > 0 && (
                           <button
                             onClick={() => openSettleModal(client)}
@@ -536,6 +586,18 @@ export default function Clients({ userProfile }: ClientsProps) {
                   />
                 </div>
               </div>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-black uppercase tracking-widest text-slate-400">Mode de règlement</span>
+                <select value={settleMode} onChange={event => setSettleMode(event.target.value)} className="w-full rounded-xl border-2 border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold">
+                  <option>Espèces</option><option>Carte</option><option>Virement</option>
+                </select>
+              </label>
+
+              {settleError && <div role="alert" className="rounded-xl bg-rose-50 p-3 text-xs font-semibold text-rose-700">
+                {settleError}
+                {!cashSession && !cashSessionLoading && <button type="button" onClick={() => navigate('/cash-session')} className="ml-2 underline">Ouvrir la caisse</button>}
+              </div>}
 
               {/* Résumé dynamique */}
               {settleAmount > 0 && settleAmount < settlingClient.debt && (

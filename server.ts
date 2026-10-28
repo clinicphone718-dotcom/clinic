@@ -5,11 +5,12 @@ import path from "path";
 import cors from "cors";
 import PDFDocument from "pdfkit";
 import { applicationDefault, cert, initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import fs from "fs";
 import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
+import { getInvoiceTotals } from "./src/lib/financial";
 
 const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
 let firebaseConfig: Record<string, unknown> = {};
@@ -70,7 +71,10 @@ const OTP_MAX_ATTEMPTS = 5;
 // Exposes the caller on res.locals (authUid, isSuperAdmin).
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const match = /^Bearer (.+)$/.exec(req.headers.authorization || "");
-  if (!match) return res.status(401).json({ error: "Authentification requise." });
+  if (!match) {
+    console.warn("Authorization denied: bearer token missing.");
+    return res.status(401).json({ error: "Authentification requise." });
+  }
   try {
     const decoded = await adminAuth.verifyIdToken(match[1]);
     res.locals.authUid = decoded.uid;
@@ -80,6 +84,7 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
       SUPER_ADMIN_EMAILS.includes(decoded.email.toLowerCase());
     next();
   } catch {
+    console.warn("Authorization denied: bearer token invalid or expired.");
     res.status(401).json({ error: "Jeton invalide ou expiré." });
   }
 }
@@ -90,11 +95,14 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   try {
     const snap = await adminDb.collection("users").doc(res.locals.authUid).get();
     const data = snap.data();
-    if (snap.exists && data?.role === "admin" && data?.status !== "banned" && (data?.ownerId || snap.id) === snap.id) {
+    const ownerId = typeof data?.ownerId === "string" && data.ownerId ? data.ownerId : snap.id;
+    if (snap.exists && data?.role === "admin" && data?.status !== "banned" && ownerId === snap.id) {
       return next();
     }
+    console.warn("Authorization denied: caller is not an active store administrator.");
     res.status(403).json({ error: "Accès refusé." });
   } catch {
+    console.error("Authorization check failed: administrator profile lookup failed.");
     res.status(500).json({ error: "Erreur de vérification des droits." });
   }
 }
@@ -102,9 +110,29 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // A non-super-admin may only manage collaborators that belong to their own store.
 async function canManageTarget(res: Response, targetUid: string): Promise<boolean> {
   if (res.locals.isSuperAdmin) return true;
-  if (targetUid === res.locals.authUid) return false;
-  const snap = await adminDb.collection("users").doc(targetUid).get();
-  return snap.exists && snap.data()?.ownerId === res.locals.authUid;
+  if (targetUid === res.locals.authUid) {
+    console.warn("Authorization denied: store administrator attempted to manage their own account.");
+    return false;
+  }
+  try {
+    const snap = await adminDb.collection("users").doc(targetUid).get();
+    if (!snap.exists) {
+      console.warn("Authorization denied: target profile does not exist.");
+      return false;
+    }
+    if (snap.data()?.ownerId !== res.locals.authUid) {
+      console.warn("Authorization denied: target profile belongs to another store.");
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("Authorization check failed: target profile lookup failed.", {
+      code: typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "unknown",
+    });
+    throw error;
+  }
 }
 
 function isStringArray(v: unknown): v is string[] {
@@ -134,6 +162,165 @@ async function startServer() {
 
   app.get("/healthz", (_req, res) => {
     res.sendStatus(200);
+  });
+
+  app.get("/api/healthz", (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.post("/api/financial/sales/:saleId/costs", requireAuth, async (req, res) => {
+    try {
+      const authUid = String(res.locals.authUid || "");
+      const userSnap = await adminDb.collection("users").doc(authUid).get();
+      const userData = userSnap.data();
+      if (!userSnap.exists || userData?.status === "banned") {
+        return res.status(403).json({ error: "Accès refusé." });
+      }
+      const ownerId = userData?.role === "admin" && (userData?.ownerId || authUid) === authUid
+        ? authUid
+        : String(userData?.ownerId || "");
+      if (!ownerId) return res.status(403).json({ error: "Accès refusé." });
+
+      const saleId = String(req.params.saleId || "");
+      if (!/^[A-Za-z0-9_-]{1,150}$/.test(saleId)) {
+        return res.status(400).json({ error: "Identifiant de vente invalide." });
+      }
+      const saleRef = adminDb.collection("sales").doc(saleId);
+      const snapshotRef = adminDb.collection("sale_costs").doc(saleId);
+      await adminDb.runTransaction(async transaction => {
+        const existingSnapshot = await transaction.get(snapshotRef);
+        if (existingSnapshot.exists) return;
+        const saleSnapshot = await transaction.get(saleRef);
+        if (!saleSnapshot.exists || saleSnapshot.data()?.ownerId !== ownerId) {
+          throw new Error("Vente introuvable pour ce magasin.");
+        }
+        const sale = saleSnapshot.data() || {};
+        const items = Array.isArray(sale.items) ? sale.items : [];
+        const lineRefs = items.map((item: Record<string, unknown>) => {
+          const inventory = item.inventoryCollection === "parts" ? "parts" : "products";
+          const productId = String(item.productId || "");
+          if (!productId) throw new Error("Une ligne de vente ne possède pas d'identifiant produit valide.");
+          return {
+            inventory,
+            productId,
+            inventoryRef: adminDb.collection(inventory).doc(productId),
+            costRef: adminDb.collection(inventory === "parts" ? "part_costs" : "product_costs").doc(productId),
+          };
+        });
+        const lineSnapshots = await Promise.all(lineRefs.flatMap(line => [
+          transaction.get(line.inventoryRef),
+          transaction.get(line.costRef),
+        ]));
+        const costs = items.map((item: Record<string, unknown>, index: number) => {
+          const inventorySnap = lineSnapshots[index * 2];
+          const costSnap = lineSnapshots[index * 2 + 1];
+          const inventoryData = inventorySnap.data();
+          const separatedCost = costSnap.data();
+          const ownerMatches = inventoryData?.ownerId === ownerId;
+          const costOwnerMatches = separatedCost?.ownerId === ownerId;
+          const value = costOwnerMatches
+            ? Number(separatedCost?.buyPrice)
+            : ownerMatches && lineRefs[index].inventory === "products"
+              ? Number(inventoryData?.buyPrice)
+              : NaN;
+          return {
+            productId: lineRefs[index].productId,
+            name: String(item.name || ""),
+            quantity: Number(item.quantity) || 0,
+            unitBuyPrice: Number.isFinite(value) && value >= 0 ? value : null,
+          };
+        });
+        transaction.create(snapshotRef, {
+          saleId,
+          ownerId,
+          items: costs,
+          complete: costs.every((line: { unitBuyPrice: number | null }) => line.unitBuyPrice !== null),
+          capturedAt: FieldValue.serverTimestamp(),
+        });
+      });
+      return res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur inconnue.";
+      return res.status(500).json({ error: `Impossible de figer les coûts de cette vente : ${message}` });
+    }
+  });
+
+  app.post("/api/financial/repairs/:repairId/costs", requireAuth, async (req, res) => {
+    try {
+      const authUid = String(res.locals.authUid || "");
+      const userSnap = await adminDb.collection("users").doc(authUid).get();
+      const userData = userSnap.data();
+      if (!userSnap.exists || userData?.status === "banned") {
+        return res.status(403).json({ error: "Accès refusé." });
+      }
+      const ownerId = userData?.role === "admin" && (userData?.ownerId || authUid) === authUid
+        ? authUid
+        : String(userData?.ownerId || "");
+      if (!ownerId) return res.status(403).json({ error: "Accès refusé." });
+
+      const repairId = String(req.params.repairId || "");
+      if (!/^[A-Za-z0-9_-]{1,150}$/.test(repairId)) {
+        return res.status(400).json({ error: "Identifiant de réparation invalide." });
+      }
+      const repairRef = adminDb.collection("repairs").doc(repairId);
+      const costsRef = adminDb.collection("repair_costs").doc(repairId);
+      await adminDb.runTransaction(async transaction => {
+        const oldCostsSnapshot = await transaction.get(costsRef);
+        const repairSnap = await transaction.get(repairRef);
+        if (!repairSnap.exists || repairSnap.data()?.ownerId !== ownerId) {
+          throw new Error("Réparation introuvable pour ce magasin.");
+        }
+        const repair = repairSnap.data() || {};
+        const parts = Array.isArray(repair.parts) ? repair.parts : [];
+        const priorCosts = new Map(
+          ((oldCostsSnapshot.data()?.parts || []) as Array<{ productId: string; unitBuyPrice: number }>)
+            .map(part => [part.productId, Number(part.unitBuyPrice)]),
+        );
+        const refs = parts.map((part: Record<string, unknown>) => {
+          const inventory = part.inventoryCollection === "parts" ? "parts" : "products";
+          const productId = String(part.productId || "");
+          if (!productId) throw new Error("Une pièce de réparation ne possède pas d'identifiant valide.");
+          return {
+            inventory,
+            productId,
+            inventoryRef: adminDb.collection(inventory).doc(productId),
+            costRef: adminDb.collection(inventory === "parts" ? "part_costs" : "product_costs").doc(productId),
+          };
+        });
+        const snaps = await Promise.all(refs.flatMap(ref => [
+          transaction.get(ref.inventoryRef),
+          transaction.get(ref.costRef),
+        ]));
+        const costs = parts.flatMap((part: Record<string, unknown>, index: number) => {
+          const inventoryData = snaps[index * 2].data();
+          const separatedData = snaps[index * 2 + 1].data();
+          const priorValue = priorCosts.get(refs[index].productId);
+          const partBuyPrice = typeof part.unitBuyPrice === "number" && Number.isFinite(part.unitBuyPrice)
+            ? part.unitBuyPrice
+            : NaN;
+          const value = typeof priorValue === "number" && Number.isFinite(priorValue)
+            ? priorValue
+            : separatedData?.ownerId === ownerId
+              ? Number(separatedData.buyPrice)
+              : inventoryData?.ownerId === ownerId && refs[index].inventory === "products"
+                ? Number(inventoryData.buyPrice)
+                : partBuyPrice;
+          return Number.isFinite(value) && value >= 0
+            ? [{ productId: refs[index].productId, unitBuyPrice: value, quantity: Number(part.quantity) || 0 }]
+            : [];
+        });
+        transaction.set(costsRef, {
+          ownerId,
+          parts: costs,
+          complete: costs.length === parts.length,
+          capturedAt: FieldValue.serverTimestamp(),
+        });
+      });
+      return res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur inconnue.";
+      return res.status(500).json({ error: `Impossible de figer les coûts de réparation : ${message}` });
+    }
   });
 
   // API endpoints for User Administration (syncing with Firebase Auth + Firestore)
@@ -257,13 +444,18 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (err: any) {
-      console.error("Error updating user:", err);
+      console.error("User update failed.", {
+        code: typeof err === "object" && err !== null && "code" in err
+          ? String(err.code)
+          : "unknown",
+      });
       res.status(500).json({ error: err.message });
     }
   });
 
   app.post("/api/admin/users/delete", requireAuth, requireAdmin, async (req, res) => {
     let profileRemoved = false;
+    let removedProfile: Record<string, unknown> | null = null;
     try {
       const { uid } = req.body;
       if (typeof uid !== "string" || !uid) {
@@ -284,6 +476,7 @@ async function startServer() {
         }
 
         const targetData = targetProfile.data()!;
+        removedProfile = targetData;
         if (targetData.role === "admin") {
           const administrators = await transaction.get(
             adminDb.collection("users").where("role", "==", "admin")
@@ -318,15 +511,29 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (error) {
-      console.error("Unable to delete the requested user.");
+      console.error("User deletion failed.", {
+        code: typeof error === "object" && error !== null && "code" in error
+          ? String(error.code)
+          : "unknown",
+      });
+      if (profileRemoved && removedProfile) {
+        try {
+          await adminDb.collection("users").doc(String(req.body.uid)).create(removedProfile);
+        } catch {
+          console.error("User deletion rollback failed: profile restoration failed.");
+          return res.status(500).json({
+            error: "La suppression est incomplète : le profil Firestore n’a pas pu être rétabli après l’échec de Firebase Authentication.",
+          });
+        }
+      }
       const status = typeof error === "object" && error !== null && "status" in error &&
         typeof error.status === "number" ? error.status : 500;
       const message = profileRemoved
-        ? "Profil retiré, mais la suppression du compte Firebase Authentication a échoué. Contactez l’administrateur."
+        ? "La suppression du compte Firebase Authentication a échoué et le profil a été rétabli. Veuillez réessayer."
         : status < 500 && error instanceof Error
           ? error.message
           : "Impossible de supprimer cet utilisateur.";
-      res.status(status).json({ error: message });
+      res.status(profileRemoved ? 502 : status).json({ error: message });
     }
   });
 
@@ -375,8 +582,8 @@ async function startServer() {
         invoice.items.forEach((item: any) => {
           const name = String(item?.name || "").substring(0, 15).padEnd(16);
           const qty = String(item?.quantity || 1).padStart(3);
-          const price = num(item?.price).toFixed(2).padStart(7);
-          const total = num(item?.total).toFixed(2).padStart(7);
+          const price = num(item?.price).toFixed(3).padStart(8);
+          const total = num(item?.total).toFixed(3).padStart(8);
           doc.text(`${name} ${qty} ${price} ${total}`);
         });
       }
@@ -385,17 +592,22 @@ async function startServer() {
       doc.moveDown();
 
       // Totals
-      const total = num(invoice.total);
-      const tva = num(invoice.tva);
+      const totals = getInvoiceTotals(invoice);
+      const total = totals.total;
+      const tva = totals.tva;
       const paid = num(invoice.paid);
       const debt = num(invoice.debt);
-      const subtotal = total - tva;
-      if (tva > 0) {
-        doc.fontSize(10).text(`Sous-total: ${subtotal.toFixed(2)} DT`, { align: "right" });
-        doc.fontSize(10).text(`TVA: ${tva.toFixed(2)} DT`, { align: "right" });
+      if (totals.tvaVisible && tva > 0) {
+        doc.fontSize(10).text(`Sous-total: ${totals.subtotal.toFixed(3)} DT`, { align: "right" });
+        if (totals.discount > 0) {
+          doc.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: "right" });
+        }
+        doc.fontSize(10).text(`TVA: ${tva.toFixed(3)} DT`, { align: "right" });
+      } else if (totals.discount > 0) {
+        doc.fontSize(10).text(`Remise: -${totals.discount.toFixed(3)} DT`, { align: "right" });
       }
-      doc.fontSize(12).font("Helvetica-Bold").text(`TOTAL GENERAL: ${total.toFixed(2)} DT`, { align: "right" });
-      doc.fontSize(10).font("Helvetica").text(`Payé: ${paid.toFixed(2)} DT`, { align: "right" });
+      doc.fontSize(12).font("Helvetica-Bold").text(`TOTAL GENERAL: ${total.toFixed(3)} DT`, { align: "right" });
+      doc.fontSize(10).font("Helvetica").text(`Payé: ${paid.toFixed(3)} DT`, { align: "right" });
       if (debt > 0) {
         doc.fillColor("red").text(`Reste (Dette): ${debt.toFixed(2)} DT`, { align: "right" });
       }

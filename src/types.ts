@@ -21,6 +21,8 @@ export interface Product {
   createdAt?: string;
 }
 
+import type { MessageTemplateKey } from './lib/messages';
+
 export interface Client {
   id: string;
   code?: string;
@@ -45,6 +47,9 @@ export interface Sale {
   clientId?: string;
   clientName?: string;
   total: number;
+  subtotal?: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
   paid: number;
   debt: number;
   tva: number;
@@ -52,6 +57,7 @@ export interface Sale {
   invoiceId?: string;
   items: SaleItem[];
   ownerId?: string;
+  sessionId?: string;
 }
 
 export interface Invoice {
@@ -64,13 +70,42 @@ export interface Invoice {
   clientPhone?: string;
   clientAddress?: string;
   total: number;
+  subtotal?: number;
   paid: number;
   debt: number;
   tva: number;
+  tvaEnabled?: boolean;
+  tvaRate?: number;
   discount?: number;
   date: any;
   items: SaleItem[];
   ownerId?: string;
+  sessionId?: string;
+}
+
+export interface CashSessionTotals {
+  sales: number;
+  cash: number;
+  debtsCollected: number;
+  debtsCollectedCash: number;
+  repairsCollected: number;
+  repairsCollectedCash: number;
+  expenses: number;
+  expensesCash: number;
+}
+
+export interface CashSession {
+  id: string;
+  ownerId: string;
+  openedBy: string;
+  openedAt: any;
+  openingFloat: number;
+  status: 'open' | 'closed';
+  closedAt?: any;
+  countedCash?: number;
+  expectedCash?: number;
+  difference?: number;
+  totals: CashSessionTotals;
 }
 
 export interface UserProfile {
@@ -129,6 +164,7 @@ export interface StartupItem {
   text?: string;
   source?: string;
   repeat?: number;
+  imageUrl?: string;
   imageData?: string;
   audioUrl?: string;
   order: number;
@@ -142,8 +178,11 @@ export interface StoreSettings {
   currency: string;
   address?: string;
   phone?: string;
+  whatsappCountryCode?: string;
+  messageTemplates?: Partial<Record<MessageTemplateKey, string>>;
   tva: number;
   tvaEnabled?: boolean;
+  tvaOptIn?: boolean;
   ownerId?: string;
   deleteCode?: string;
   minStockAlert?: number;
@@ -219,6 +258,11 @@ export interface Repair {
   laborCost?: number;
   parts: RepairPart[];
   total: number;
+  subtotal?: number;
+  tva?: number;
+  tvaEnabled?: boolean;
+  tvaOptIn?: boolean;
+  tvaRate?: number;
   paid: number;
   debt: number;
   discount?: number;
@@ -228,4 +272,5 @@ export interface Repair {
   logs: RepairLog[];
   ownerId?: string;
   costsSeparated?: boolean;
+  sessionId?: string;
 }

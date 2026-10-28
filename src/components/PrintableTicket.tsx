@@ -3,6 +3,7 @@ import { format } from 'date-fns';
 import { Invoice, StoreSettings } from '../types';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { getInvoiceTotals } from '../lib/financial';
 
 interface Props {
   invoice: Invoice;
@@ -42,6 +43,7 @@ export const PrintableTicket = forwardRef<HTMLDivElement, Props>(({ invoice, own
   const storeAddress = storeSettings?.address || 'Superette & Épicerie';
   const storePhone = storeSettings?.phone || '';
   const currency = storeSettings?.currency || 'DT';
+  const totals = getInvoiceTotals(invoice);
 
   return (
     <div ref={ref} className="p-5 w-[80mm] mx-auto bg-white text-black font-mono text-[12px] leading-tight">
@@ -67,9 +69,27 @@ export const PrintableTicket = forwardRef<HTMLDivElement, Props>(({ invoice, own
         ))}
       </div>
       <div className="border-t border-dashed border-black my-1"></div>
+      {totals.tvaVisible && (
+        <>
+          <div className="flex justify-between">
+            <span>Sous-total</span>
+            <span>{totals.subtotal.toFixed(3)} {currency}</span>
+          </div>
+          {totals.discount > 0 && (
+            <div className="flex justify-between">
+              <span>Remise</span>
+              <span>-{totals.discount.toFixed(3)} {currency}</span>
+            </div>
+          )}
+          <div className="flex justify-between">
+            <span>TVA</span>
+            <span>{totals.tva.toFixed(3)} {currency}</span>
+          </div>
+        </>
+      )}
       <div className="flex justify-between font-bold">
         <span>TOTAL</span>
-        <span>{invoice.total.toFixed(3)} {currency}</span>
+        <span>{totals.total.toFixed(3)} {currency}</span>
       </div>
       <div className="flex justify-between">
         <span>Payé</span>

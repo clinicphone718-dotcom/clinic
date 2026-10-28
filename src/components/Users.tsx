@@ -6,6 +6,7 @@ import { getAuth, createUserWithEmailAndPassword, sendPasswordResetEmail } from 
 import { UserProfile } from '../types';
 import { 
   Users as UsersIcon, 
+  Activity,
   UserPlus, 
   User,
   X, 
@@ -26,7 +27,7 @@ import {
 import { cn } from '../lib/utils';
 import { mergePermissions, PERMISSION_FLAGS, PermissionMap, PermissionPreset, permissionPreset, permissionsForPreset } from '../lib/permissions';
 import { useIsSuperAdmin } from '../lib/useIsSuperAdmin';
-import { apiRequest } from '../lib/api';
+import { apiRequest, checkApiHealth } from '../lib/api';
 
 const MENU_OPTIONS = [
   { id: 'dashboard', name: 'Tableau de bord', description: 'Statistiques et graphiques généraux' },
@@ -73,6 +74,8 @@ export default function Users({ userProfile }: UsersProps) {
   const [deletingUser, setDeletingUser] = useState<UserProfile | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [migrationConfirmOpen, setMigrationConfirmOpen] = useState(false);
+  const [apiHealth, setApiHealth] = useState<{ ok: boolean; message: string } | null>(null);
+  const [apiHealthLoading, setApiHealthLoading] = useState(false);
 
   const ownerId = userProfile?.ownerId || userProfile?.uid || 'no_user_auth';
 
@@ -626,8 +629,7 @@ export default function Users({ userProfile }: UsersProps) {
       setErrorOnCreate('Impossible de supprimer le dernier administrateur du magasin.');
       return;
     }
-    if (deleteConfirmation.trim().toLowerCase() !== user.email.toLowerCase() &&
-      deleteConfirmation.trim() !== 'SUPPRIMER') {
+    if (deleteConfirmation.trim().toLowerCase() !== user.email.toLowerCase()) {
       return;
     }
 
@@ -651,13 +653,29 @@ export default function Users({ userProfile }: UsersProps) {
     }
   };
 
+  const handleApiHealthCheck = async () => {
+    setApiHealthLoading(true);
+    setApiHealth(null);
+    try {
+      await checkApiHealth();
+      setApiHealth({ ok: true, message: 'Serveur API accessible.' });
+    } catch (error) {
+      setApiHealth({
+        ok: false,
+        message: error instanceof Error ? error.message : 'Vérification du serveur impossible.',
+      });
+    } finally {
+      setApiHealthLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            <UsersIcon className="w-7 h-7 text-indigo-600 fill-indigo-100/40" />
+          <h1 className="flex items-center gap-2 font-display text-3xl font-black tracking-tight text-slate-900">
+            <UsersIcon className="h-8 w-8 text-indigo-600 fill-indigo-100/40" />
             Gestion des Utilisateurs
           </h1>
           <p className="text-xs text-slate-500 font-medium">
@@ -665,20 +683,36 @@ export default function Users({ userProfile }: UsersProps) {
           </p>
         </div>
 
-        <button
-          onClick={() => {
-            setErrorOnCreate(null);
-            setRoleInput('cashier-repair');
-            setSelectedMenus(CASHIER_REPAIR_MENUS);
-            setPermissionsInput(permissionsForPreset('cashier'));
-            setIsModalOpen(true);
-          }}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white text-xs font-extrabold uppercase tracking-wider rounded-xl hover:bg-indigo-700 transition-all shadow-md shadow-indigo-600/10 active:scale-95 shrink-0 self-start sm:self-auto"
-        >
-          <UserPlus className="w-4 h-4" />
-          Créer un utilisateur
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => void handleApiHealthCheck()}
+            disabled={apiHealthLoading}
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+          >
+            <Activity className="h-4 w-4" />
+            {apiHealthLoading ? 'Vérification…' : 'Tester le serveur'}
+          </button>
+          <button
+            onClick={() => {
+              setErrorOnCreate(null);
+              setRoleInput('cashier-repair');
+              setSelectedMenus(CASHIER_REPAIR_MENUS);
+              setPermissionsInput(permissionsForPreset('cashier'));
+              setIsModalOpen(true);
+            }}
+            className="inline-flex shrink-0 items-center gap-2 rounded-2xl bg-indigo-600 px-4 py-2.5 text-xs font-extrabold uppercase tracking-wider text-white shadow-md shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-95"
+          >
+            <UserPlus className="w-4 h-4" />
+            Créer un utilisateur
+          </button>
+        </div>
       </div>
+      {apiHealth && (
+        <p role={apiHealth.ok ? 'status' : 'alert'} className={`rounded-xl border px-4 py-3 text-sm font-semibold ${apiHealth.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-rose-200 bg-rose-50 text-rose-800'}`}>
+          {apiHealth.message}
+        </p>
+      )}
 
       <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
         <button
@@ -990,13 +1024,13 @@ export default function Users({ userProfile }: UsersProps) {
                 <p className="mt-2 text-sm leading-relaxed text-slate-700">Êtes-vous sûr ? Cette action est définitive : le compte et l'accès de l'utilisateur seront supprimés.</p>
               </div>
             </div>
-            <p className="text-sm text-slate-600">Saisissez l’email <strong className="text-slate-900">{deletingUser.email}</strong> ou <strong>SUPPRIMER</strong> pour confirmer.</p>
+            <p className="text-sm text-slate-600">Saisissez l’email <strong className="text-slate-900">{deletingUser.email}</strong> pour confirmer.</p>
             <input autoFocus value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} aria-label="Confirmation de suppression" className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-600" />
             {deletingUser.role === 'admin' && users.filter(profile => profile.role === 'admin' && (profile.ownerId || profile.uid) === (userProfile?.ownerId || userProfile?.uid)).length <= 1 && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-700">Impossible de supprimer le dernier administrateur du magasin.</p>}
             {errorOnCreate && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-700">{errorOnCreate}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => { setDeletingUser(null); setDeleteConfirmation(''); setErrorOnCreate(null); }} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700">Annuler</button>
-              <button type="button" onClick={() => void handleDeleteProfileAndAuth(deletingUser)} disabled={actionLoading === deletingUser.uid || (deleteConfirmation.trim().toLowerCase() !== deletingUser.email.toLowerCase() && deleteConfirmation.trim() !== 'SUPPRIMER') || (deletingUser.role === 'admin' && users.filter(profile => profile.role === 'admin' && (profile.ownerId || profile.uid) === (userProfile?.ownerId || userProfile?.uid)).length <= 1)} className="min-h-10 rounded-xl bg-rose-700 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{actionLoading === deletingUser.uid ? 'Suppression…' : 'Supprimer définitivement'}</button>
+              <button type="button" onClick={() => void handleDeleteProfileAndAuth(deletingUser)} disabled={actionLoading === deletingUser.uid || deleteConfirmation.trim().toLowerCase() !== deletingUser.email.toLowerCase() || (deletingUser.role === 'admin' && users.filter(profile => profile.role === 'admin' && (profile.ownerId || profile.uid) === (userProfile?.ownerId || userProfile?.uid)).length <= 1)} className="min-h-10 rounded-xl bg-rose-700 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{actionLoading === deletingUser.uid ? 'Suppression…' : 'Supprimer définitivement'}</button>
             </div>
           </section>
         </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  collection, onSnapshot, addDoc, updateDoc, doc, query, where,
+  collection, onSnapshot, addDoc, updateDoc, arrayUnion, doc, query, where,
   serverTimestamp, runTransaction, getDoc, deleteDoc, type DocumentSnapshot, type Transaction
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
@@ -17,9 +17,14 @@ import {
 } from 'lucide-react';
 import { cn, isSparePart, decodeAzertyBarcode } from '../lib/utils';
 import { getRepairStockChanges, getRepairStockMovementId } from '../lib/repairInventory';
+import { computeTotals, normalizeFinancialSettings } from '../lib/financial';
 import { format } from 'date-fns';
 import { RepairTicket } from './RepairTicket';
 import { can } from '../lib/permissions';
+import { apiFetch } from '../lib/api';
+import { addCashSessionTotals, requireOpenCashSession, useCashSession } from '../lib/cashSessions';
+import MessageComposer from './MessageComposer';
+import type { MessageTemplateKey } from '../lib/messages';
 
 interface RepairsProps {
   userProfile: UserProfile | null;
@@ -34,17 +39,36 @@ type RepairInventoryProduct = Product & {
 };
 
 export const STATUS_STYLES: Record<RepairStatus, string> = {
-  recu: 'bg-slate-100 text-slate-700 border-slate-200',
-  diagnostic: 'bg-blue-50 text-blue-700 border-blue-200',
-  en_attente_piece: 'bg-amber-50 text-amber-700 border-amber-200',
-  en_cours: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-  termine: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  livre: 'bg-teal-50 text-teal-700 border-teal-200',
-  irreparable: 'bg-rose-50 text-rose-700 border-rose-200',
-  annule: 'bg-slate-100 text-slate-400 border-slate-200 line-through',
+  recu: 'bg-[#F4F4F2] text-[#5C5C5C] border-[#E2E2DF]',
+  diagnostic: 'bg-[#F4F4F2] text-[#5C5C5C] border-[#E2E2DF]',
+  en_attente_piece: 'bg-[#FBDDD5] text-[#8A210A] border-[#F6C9BE]',
+  en_cours: 'bg-[#F4F4F2] text-[#0A0A0A] border-[#E2E2DF]',
+  termine: 'bg-[#F4F4F2] text-[#0A0A0A] border-[#E2E2DF]',
+  livre: 'bg-[#F4F4F2] text-[#5C5C5C] border-[#E2E2DF]',
+  irreparable: 'bg-[#FBDDD5] text-[#8A210A] border-[#F6C9BE]',
+  annule: 'bg-[#F4F4F2] text-[#5C5C5C] border-[#E2E2DF] line-through',
 };
 
 export const ACTIVE_STATUSES: RepairStatus[] = ['recu', 'diagnostic', 'en_attente_piece', 'en_cours', 'termine'];
+
+function getRepairMessageTemplate(repair: Repair): MessageTemplateKey {
+  if (repair.status === 'en_attente_piece') return 'en_attente_piece';
+  if (repair.status === 'termine') return 'repare_pret';
+  if (repair.status === 'livre') return repair.debt > 0 ? 'rappel_paiement' : 'repare_pret';
+  return repair.debt > 0 ? 'rappel_paiement' : 'appareil_recu';
+}
+
+async function logRepairMessage(repair: Repair, channel: string, userLabel: string): Promise<void> {
+  const sentAt = new Date();
+  const formattedDate = format(sentAt, 'dd/MM/yyyy HH:mm');
+  await updateDoc(doc(db, 'repairs', repair.id), {
+    logs: arrayUnion({
+      date: sentAt.toISOString(),
+      note: `Message envoyé le ${formattedDate} par ${userLabel} via ${channel} (ouverture de l’application, envoi non confirmé).`,
+      by: userLabel,
+    } satisfies RepairLog),
+  });
+}
 
 interface RepairStockMovement {
   id: string;
@@ -343,7 +367,15 @@ export default function Repairs({ userProfile }: RepairsProps) {
       )
       : () => setRepairCosts({});
     const unsubSettings = onSnapshot(doc(db, 'settings', ownerId), (snap) => {
-      if (snap.exists()) setSettings({ id: snap.id, ...snap.data() } as StoreSettings);
+      if (snap.exists()) {
+        const data = snap.data() as StoreSettings;
+        const { id: _storedId, ...settingsData } = data;
+        setSettings({
+          ...settingsData,
+          ...normalizeFinancialSettings(settingsData),
+          id: snap.id,
+        });
+      }
     });
     return () => { unsubRepairs(); unsubClients(); unsubProducts(); unsubProductCosts(); unsubSpareParts(); unsubPartCosts(); unsubRepairCosts(); unsubSettings(); };
   }, [ownerId, isAdmin, canViewProductBuyPrice, canViewPartBuyPrice, canViewCosts, userProfile]);
@@ -445,36 +477,40 @@ export default function Repairs({ userProfile }: RepairsProps) {
     return Object.values(map).sort((a, b) => b.dateStr.localeCompare(a.dateStr));
   }, [repairs]);
 
-  // Bénéfice net par jour des réparations livrées (facturé - coût d'achat des pièces).
-  // Coût pièce = prix d'achat figé sur la ligne ; repli sur le prix d'achat actuel si absent.
+  // Les coûts historiques absents restent explicitement incomplets; aucun prix actuel n'est substitué.
   const dailyNetProfit = useMemo(() => {
     if (!canViewCosts) return [];
-    const map: Record<string, { dateStr: string; count: number; revenue: number; partsCost: number; profit: number }> = {};
+    const map: Record<string, { dateStr: string; count: number; revenue: number; partsCost: number; profit: number; complete: boolean }> = {};
     repairs.filter(r => r.status === 'livre').forEach(r => {
       const key = dayKeyOf(toJsDate(r.deliveredAt || r.date));
-      if (!map[key]) map[key] = { dateStr: key, count: 0, revenue: 0, partsCost: 0, profit: 0 };
-      const partsCost = (r.parts || []).reduce((s, p) => {
-        const unitCost = p.inventoryCollection === 'parts'
-          ? (partCosts[p.productId] || 0)
-          : (repairCosts[r.id]?.[p.productId] || 0) > 0
-          ? repairCosts[r.id][p.productId]
-          : (p.unitBuyPrice && p.unitBuyPrice > 0)
-          ? p.unitBuyPrice
-          : (products.find(pr => pr.id === p.productId)?.buyPrice || 0);
-        return s + unitCost * (p.quantity || 0);
-      }, 0);
-      const revenue = r.total || 0;
+      if (!map[key]) map[key] = { dateStr: key, count: 0, revenue: 0, partsCost: 0, profit: 0, complete: true };
+      let partsCost = 0;
+      (r.parts || []).forEach(part => {
+        const unitCost = repairCosts[r.id]?.[part.productId] ?? part.unitBuyPrice;
+        if (typeof unitCost !== 'number' || !Number.isFinite(unitCost)) map[key].complete = false;
+        else partsCost += unitCost * (part.quantity || 0);
+      });
+      const discount = Number(r.discount) || 0;
+      const totals = computeTotals([
+        { total: Number(r.laborCost) || 0 },
+        ...(r.parts || []).map(part => ({ total: Number(part.total) || 0 })),
+      ], discount, {
+        tvaEnabled: r.tvaEnabled === true,
+        tva: r.tvaRate,
+      });
+      const revenue = totals.taxableAmount;
       map[key].count += 1;
       map[key].revenue += revenue;
       map[key].partsCost += partsCost;
       map[key].profit += (revenue - partsCost);
     });
     return Object.values(map).sort((a, b) => b.dateStr.localeCompare(a.dateStr));
-  }, [repairs, products, partCosts, repairCosts, canViewCosts]);
+  }, [repairs, repairCosts, canViewCosts]);
 
   const todayProfit = useMemo(() => {
     const todayKey = dayKeyOf(new Date());
-    return dailyNetProfit.find(d => d.dateStr === todayKey)?.profit || 0;
+    const today = dailyNetProfit.find(d => d.dateStr === todayKey);
+    return today ? (today.complete ? today.profit : null) : 0;
   }, [dailyNetProfit]);
 
   const todayCount = useMemo(() => {
@@ -555,19 +591,19 @@ export default function Repairs({ userProfile }: RepairsProps) {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-3xl font-black font-display text-slate-900 flex items-center gap-3">
-            <span className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-600/20">
-              <Wrench className="w-6 h-6 text-white" />
+          <h1 className="flex items-center gap-3 font-display text-[34px] font-bold leading-tight tracking-tight text-[#0A0A0A] lg:text-[52px]">
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#0A0A0A] text-white">
+              <Wrench className="h-6 w-6" />
             </span>
             Atelier de réparation
           </h1>
-          <p className="text-slate-500 text-sm mt-1 font-medium">Gestion des ordres de réparation et suivi</p>
+          <p className="mt-1 text-sm font-medium text-[#5C5C5C]">Gestion des ordres de réparation et suivi</p>
         </div>
         <button
           onClick={() => { setEditingRepair(null); setIsFormOpen(true); }}
-          className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-2xl font-bold text-sm shadow-lg shadow-indigo-600/20 transition-all"
+          className="flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#0A0A0A] px-5 py-3 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A]"
         >
           <Plus className="w-5 h-5" /> Nouvelle réparation
         </button>
@@ -576,26 +612,26 @@ export default function Repairs({ userProfile }: RepairsProps) {
       {/* Stats */}
       <div className={cn("grid grid-cols-2 gap-4", canViewCosts ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
         {[
-          { label: 'En cours', value: stats.active, icon: Clock, color: 'from-indigo-500 to-indigo-600' },
-          { label: 'Prêts à récupérer', value: stats.ready, icon: CheckCircle, color: 'from-emerald-500 to-emerald-600' },
-          { label: 'Réparations du jour', value: todayCount, icon: Package, color: 'from-amber-500 to-amber-600', onClick: () => setStatsModal('count') },
-          { label: 'Bénéfice net du jour', value: `${todayProfit.toFixed(2)} ${currency}`, icon: DollarSign, color: 'from-teal-500 to-cyan-600', onClick: () => setStatsModal('profit') },
+          { label: 'En cours', value: stats.active, icon: Clock },
+          { label: 'Prêts à récupérer', value: stats.ready, icon: CheckCircle },
+          { label: 'Réparations du jour', value: todayCount, icon: Package, onClick: () => setStatsModal('count') },
+          { label: 'Bénéfice net du jour', value: todayProfit === null ? '—' : `${todayProfit.toFixed(3)} ${currency}`, icon: DollarSign, onClick: () => setStatsModal('profit'), profit: true },
         ].filter((s: any) => canViewCosts || s.label !== 'Bénéfice net du jour').map((s: any, i) => {
           const Icon = s.icon;
           return (
             <div key={i} onClick={s.onClick}
               className={cn(
-                "bg-white rounded-2xl p-4 border border-slate-100 shadow-sm",
-                s.onClick && "cursor-pointer hover:border-indigo-200 hover:shadow-md active:scale-[0.99] transition-all"
+                "rounded-[20px] border border-[#E2E2DF] bg-white p-4",
+                s.onClick && "cursor-pointer transition-colors hover:bg-[#F4F4F2]"
               )}>
-              <div className={cn("w-10 h-10 rounded-xl bg-gradient-to-tr flex items-center justify-center mb-3", s.color)}>
-                <Icon className="w-5 h-5 text-white" />
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F4F2] text-[#0A0A0A]">
+                <Icon className="h-5 w-5" />
               </div>
-              <p className="text-2xl font-black text-slate-900 font-display">{s.value}</p>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">{s.label}</p>
+              <p className={cn("font-display text-2xl font-bold tabular-nums", s.profit && todayProfit !== null ? todayProfit < 0 ? 'text-[#8A210A]' : 'text-[#1B5E2B]' : 'text-[#0A0A0A]')}>{s.value}</p>
+              <p className="mt-0.5 text-[11px] font-bold uppercase tracking-wider text-[#5C5C5C]">{s.label}</p>
               {s.onClick && (
-                <p className="text-[9px] font-bold text-slate-300 mt-1 flex items-center gap-1">
-                  <History className="w-3 h-3 shrink-0" /> Historique journalier
+                <p className="mt-1 flex items-center gap-1 text-[9px] font-bold text-[#5C5C5C]">
+                  <History className="h-3 w-3 shrink-0" /> Historique journalier
                 </p>
               )}
             </div>
@@ -605,33 +641,33 @@ export default function Repairs({ userProfile }: RepairsProps) {
 
       {/* Notifications */}
       {success && (
-        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-xl text-sm font-semibold">
-          <CheckCircle className="w-4 h-4" /> {success}
+        <div className="flex items-center gap-2 rounded-xl border border-[#E2E2DF] bg-white px-4 py-3 text-sm font-semibold text-[#0A0A0A]">
+          <CheckCircle className="h-4 w-4 text-[#5C5C5C]" /> {success}
         </div>
       )}
       {error && (
-        <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-sm font-semibold">
-          <AlertCircle className="w-4 h-4" /> {error}
+        <div className="flex items-center gap-2 rounded-xl border border-[#F6C9BE] bg-[#FBDDD5] px-4 py-3 text-sm font-semibold text-[#8A210A]">
+          <AlertCircle className="h-4 w-4" /> {error}
         </div>
       )}
 
       {/* Search + filter */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5C5C5C]" />
           <input
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Rechercher : n°, client, téléphone, modèle, IMEI... (ou scannez le bon)"
-            className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-2xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+            className="w-full rounded-full border border-[#E2E2DF] bg-white py-3 pl-11 pr-4 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
           />
         </div>
         <div className="relative">
-          <Filter className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+          <Filter className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5C5C5C]" />
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="pl-11 pr-8 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
+            className="cursor-pointer appearance-none rounded-full border border-[#E2E2DF] bg-white py-3 pl-11 pr-8 text-sm font-semibold outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
           >
             <option value="active">En cours (actifs)</option>
             <option value="all">Tous les statuts</option>
@@ -644,7 +680,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           aria-label="Filtrer par technicien"
           value={technicianFilter}
           onChange={event => setTechnicianFilter(event.target.value as 'all' | 'mine')}
-          className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-indigo-500 outline-none"
+          className="rounded-full border border-[#E2E2DF] bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
         >
           <option value="all">Toutes</option>
           <option value="mine">Mes réparations</option>
@@ -652,14 +688,14 @@ export default function Repairs({ userProfile }: RepairsProps) {
       </div>
 
       {isAdmin && legacyRepairsNeedingCostSeparation.length > 0 && (
-        <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-[20px] border border-[#F6C9BE] bg-[#FBDDD5] p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="font-bold text-amber-900">Séparer les coûts historiques</p>
-            <p className="mt-1 text-sm text-amber-800">
+            <p className="font-bold text-[#8A210A]">Séparer les coûts historiques</p>
+            <p className="mt-1 text-sm text-[#8A210A]">
               {legacyRepairsNeedingCostSeparation.length} fiche(s) historique(s) n’ont pas encore été vérifiées et nettoyées des prix d’achat intégrés.
             </p>
           </div>
-          <button onClick={() => void separateLegacyRepairCosts()} disabled={migratingCosts} className="shrink-0 rounded-xl bg-amber-700 px-4 py-3 text-sm font-bold text-white hover:bg-amber-800 disabled:opacity-50">
+          <button onClick={() => void separateLegacyRepairCosts()} disabled={migratingCosts} className="min-h-11 shrink-0 rounded-full bg-[#0A0A0A] px-5 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-50">
             {migratingCosts ? 'Séparation en cours...' : 'Séparer les coûts historiques'}
           </button>
         </div>
@@ -668,12 +704,12 @@ export default function Repairs({ userProfile }: RepairsProps) {
       {/* List */}
       <div className="space-y-3">
         {filtered.length === 0 ? (
-          <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center">
-            <Wrench className="w-12 h-12 text-slate-200 mx-auto mb-3" />
-            <p className="text-slate-400 font-semibold">Aucune réparation trouvée</p>
+          <div className="rounded-[20px] border border-[#E2E2DF] bg-white p-12 text-center">
+            <Wrench className="mx-auto mb-3 h-12 w-12 text-[#B8B8B8]" />
+            <p className="font-semibold text-[#5C5C5C]">Aucune réparation trouvée</p>
           </div>
         ) : filtered.map(r => {
-          // Réparation terminée/livrée ET entièrement payée (après remise) → ligne en vert
+          // Réparation terminée/livrée et entièrement payée (après remise).
           const isDoneAndPaid = (r.status === 'termine' || r.status === 'livre') &&
             ((r.total || 0) - (r.discount || 0) - (r.paid || 0)) <= 0.001;
           return (
@@ -681,48 +717,60 @@ export default function Repairs({ userProfile }: RepairsProps) {
             key={r.id}
             onClick={() => setDetailRepair(r)}
             className={cn(
-              "rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all cursor-pointer group",
-              isDoneAndPaid
-                ? "bg-emerald-50 border-emerald-300 hover:border-emerald-400"
-                : "bg-white border-slate-100 hover:border-indigo-100"
+              "group cursor-pointer rounded-[20px] border border-[#E2E2DF] bg-white p-4 transition-colors hover:bg-[#F4F4F2]",
+              isDoneAndPaid && "border-[#D0D0D0]"
             )}
           >
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center shrink-0 group-hover:bg-indigo-50 transition-colors">
-                <Smartphone className="w-6 h-6 text-slate-400 group-hover:text-indigo-500" />
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#F4F4F2] transition-colors group-hover:bg-white">
+                <Smartphone className="h-6 w-6 text-[#5C5C5C]" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-mono font-black text-sm text-indigo-600">{r.number}</span>
+                  <span className="font-mono text-sm font-bold text-[#0A0A0A]">{r.number}</span>
                   <span className={cn("px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider border", STATUS_STYLES[r.status])}>
                     {REPAIR_STATUS_LABELS[r.status]}
                   </span>
                   {r.warrantyUntil && new Date(r.warrantyUntil) > new Date() && (
-                    <span className="flex items-center gap-1 text-[10px] font-black text-teal-600"><Shield className="w-3 h-3" /> Garantie</span>
+                    <span className="flex items-center gap-1 text-[10px] font-black text-[#5C5C5C]"><Shield className="h-3 w-3" /> Garantie</span>
                   )}
                 </div>
-                <p className="text-sm font-bold text-slate-800 truncate mt-0.5">
-                  {r.deviceBrand} {r.deviceModel} — <span className="text-slate-500 font-medium">{r.problem}</span>
+                <p className="mt-0.5 truncate text-sm font-bold text-[#0A0A0A]">
+                  {r.deviceBrand} {r.deviceModel} — <span className="font-medium text-[#5C5C5C]">{r.problem}</span>
                 </p>
-                <div className="flex items-center gap-3 text-xs text-slate-400 mt-1 font-medium">
+                <div className="mt-1 flex items-center gap-3 text-xs font-medium text-[#5C5C5C]">
                   <span className="flex items-center gap-1"><User className="w-3 h-3" /> {r.clientName || 'Sans client'}</span>
                   {r.date?.toDate && <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {format(r.date.toDate(), 'dd/MM/yyyy HH:mm')}</span>}
                 </div>
+                <div className="mt-2">
+                  <MessageComposer
+                    phone={r.clientPhone}
+                    clientName={r.clientName || 'Client'}
+                    appareil={`${r.deviceBrand || ''} ${r.deviceModel || ''}`.trim()}
+                    numero={r.number}
+                    montantRestant={`${(Number(r.debt) || 0).toFixed(3)} ${currency}`}
+                    nomMagasin={settings?.storeName || ''}
+                    indicatif={settings?.whatsappCountryCode || '216'}
+                    templates={settings?.messageTemplates}
+                    defaultTemplate={getRepairMessageTemplate(r)}
+                    onLog={(channel) => logRepairMessage(r, channel, currentUserLabel)}
+                  />
+                </div>
               </div>
               <div className="text-right shrink-0">
-                <p className="font-black text-slate-900">{(r.total || 0).toFixed(2)} {currency}</p>
-                {r.debt > 0 && <p className="text-[11px] font-bold text-rose-500">Reste {r.debt.toFixed(2)}</p>}
+                <p className="font-display font-bold tabular-nums text-[#0A0A0A]">{(r.total || 0).toFixed(3)} {currency}</p>
+                {r.debt > 0 && <p className="text-[11px] font-bold text-[#8A210A]">Reste {r.debt.toFixed(3)}</p>}
                 <div className="flex items-center justify-end gap-1 mt-1">
                   {userProfile?.role === 'admin' && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDelete(r); }}
-                      className="p-1.5 rounded-lg text-rose-400 hover:text-rose-600 hover:bg-rose-100 transition-colors"
+                      className="min-h-11 min-w-11 rounded-full text-[#8A210A] transition-colors hover:bg-[#FBDDD5]"
                       title="Supprimer la réparation"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
                   )}
-                  <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-400 transition-colors" />
+                  <ChevronRight className="h-4 w-4 text-[#5C5C5C] transition-colors" />
                 </div>
               </div>
             </div>
@@ -733,52 +781,52 @@ export default function Repairs({ userProfile }: RepairsProps) {
 
       {/* Historique journalier des indicateurs */}
       {statsModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 overflow-y-auto"
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#0A0A0A]/50 p-2 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setStatsModal(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col"
+          <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-[24px] border border-[#E2E2DF] bg-white shadow-2xl"
             onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-              <h3 className="font-black text-slate-900 flex items-center gap-2">
-                <History className="w-5 h-5 text-indigo-500" />
+            <div className="flex items-center justify-between border-b border-[#E2E2DF] px-5 py-4">
+              <h3 className="flex items-center gap-2 font-bold text-[#0A0A0A]">
+                <History className="h-5 w-5 text-[#5C5C5C]" />
                 {statsModal === 'count' ? 'Réparations par jour' : 'Bénéfice net par jour'}
               </h3>
-              <button onClick={() => setStatsModal(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+              <button onClick={() => setStatsModal(null)} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#5C5C5C] hover:bg-[#F4F4F2]"><X className="h-5 w-5" /></button>
             </div>
             <div className="overflow-y-auto p-4">
               {statsModal === 'count' ? (
                 dailyRepairCounts.length === 0 ? (
-                  <p className="text-sm text-slate-400 text-center py-6">Aucune réparation enregistrée.</p>
+                  <p className="py-6 text-center text-sm text-[#5C5C5C]">Aucune réparation enregistrée.</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-[11px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                      <tr className="border-b border-[#E2E2DF] text-[11px] font-black uppercase tracking-wider text-[#5C5C5C]">
                         <th className="text-left py-2">Date</th>
                         <th className="text-right py-2">Réparations</th>
                       </tr>
                     </thead>
                     <tbody>
                       {dailyRepairCounts.map(d => (
-                        <tr key={d.dateStr} className="border-b border-slate-50 last:border-0">
-                          <td className="py-2 font-semibold text-slate-700">{format(new Date(d.dateStr), 'dd/MM/yyyy')}</td>
-                          <td className="py-2 text-right font-black text-slate-900">{d.count}</td>
+                        <tr key={d.dateStr} className="border-b border-[#E2E2DF] last:border-0">
+                          <td className="py-2 font-semibold text-[#0A0A0A]">{format(new Date(d.dateStr), 'dd/MM/yyyy')}</td>
+                          <td className="py-2 text-right font-bold text-[#0A0A0A]">{d.count}</td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot>
-                      <tr className="border-t border-slate-200">
-                        <td className="py-2 font-black text-slate-500 text-xs uppercase tracking-wider">Total</td>
-                        <td className="py-2 text-right font-black text-indigo-600">{stats.total}</td>
+                      <tr className="border-t border-[#E2E2DF]">
+                        <td className="py-2 text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Total</td>
+                        <td className="py-2 text-right font-bold text-[#0A0A0A]">{stats.total}</td>
                       </tr>
                     </tfoot>
                   </table>
                 )
               ) : (
                 dailyNetProfit.length === 0 ? (
-                  <p className="text-sm text-slate-400 text-center py-6">Aucune réparation livrée.</p>
+                  <p className="py-6 text-center text-sm text-[#5C5C5C]">Aucune réparation livrée.</p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-[11px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                      <tr className="border-b border-[#E2E2DF] text-[11px] font-black uppercase tracking-wider text-[#5C5C5C]">
                         <th className="text-left py-2">Date</th>
                         <th className="text-right py-2">Livrées</th>
                         <th className="text-right py-2">Facturé</th>
@@ -788,20 +836,22 @@ export default function Repairs({ userProfile }: RepairsProps) {
                     </thead>
                     <tbody>
                       {dailyNetProfit.map(d => (
-                        <tr key={d.dateStr} className="border-b border-slate-50 last:border-0">
-                          <td className="py-2 font-semibold text-slate-700">{format(new Date(d.dateStr), 'dd/MM/yyyy')}</td>
-                          <td className="py-2 text-right text-slate-600">{d.count}</td>
-                          <td className="py-2 text-right text-slate-600">{d.revenue.toFixed(2)}</td>
-                          <td className="py-2 text-right text-rose-500">{d.partsCost.toFixed(2)}</td>
-                          <td className="py-2 text-right font-black text-teal-600">{d.profit.toFixed(2)}</td>
+                        <tr key={d.dateStr} className="border-b border-[#E2E2DF] last:border-0">
+                          <td className="py-2 font-semibold text-[#0A0A0A]">{format(new Date(d.dateStr), 'dd/MM/yyyy')}</td>
+                          <td className="py-2 text-right text-[#5C5C5C]">{d.count}</td>
+                          <td className="py-2 text-right text-[#5C5C5C]">{d.revenue.toFixed(3)}</td>
+                          <td className="py-2 text-right text-[#5C5C5C]">{d.complete ? d.partsCost.toFixed(3) : '—'}</td>
+                          <td className={cn("py-2 text-right font-bold", !d.complete ? 'text-[#5C5C5C]' : d.profit < 0 ? 'text-[#8A210A]' : 'text-[#1B5E2B]')}>{d.complete ? d.profit.toFixed(3) : 'Coûts manquants'}</td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot>
-                      <tr className="border-t border-slate-200">
-                        <td className="py-2 font-black text-slate-500 text-xs uppercase tracking-wider" colSpan={4}>Total</td>
-                        <td className="py-2 text-right font-black text-teal-600">
-                          {dailyNetProfit.reduce((s, d) => s + d.profit, 0).toFixed(2)} {currency}
+                      <tr className="border-t border-[#E2E2DF]">
+                        <td className="py-2 text-xs font-black uppercase tracking-wider text-[#5C5C5C]" colSpan={4}>Total</td>
+                        <td className="py-2 text-right font-bold text-[#0A0A0A]">
+                          {dailyNetProfit.every(d => d.complete)
+                            ? `${dailyNetProfit.reduce((s, d) => s + d.profit, 0).toFixed(3)} ${currency}`
+                            : 'Coûts historiques manquants'}
                         </td>
                       </tr>
                     </tfoot>
@@ -822,6 +872,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           settings={settings}
           currency={currency}
           ownerId={ownerId}
+          userProfile={userProfile}
           canCash={canCash}
           canEditProductSellPrice={can(userProfile, 'products', 'editSellPrice')}
           canEditPartSellPrice={can(userProfile, 'pieces', 'editSellPrice')}
@@ -843,6 +894,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
           currentUserLabel={currentUserLabel}
           settings={settings}
           ownerId={ownerId}
+          userProfile={userProfile}
           clients={clients}
           onEdit={() => { setEditingRepair(detailRepair); setDetailRepair(null); setIsFormOpen(true); }}
           onClose={() => setDetailRepair(null)}
@@ -859,7 +911,7 @@ export default function Repairs({ userProfile }: RepairsProps) {
 //  FORMULAIRE DE RÉPARATION
 // ============================================================
 export function RepairForm({
-  repair, clients, products, settings, currency, ownerId, currentUserLabel, canCash,
+  repair, clients, products, settings, currency, ownerId, currentUserLabel, canCash, userProfile,
   canEditProductSellPrice, canEditPartSellPrice,
   generateRepairNumber, onClose, onSaved, onError
 }: {
@@ -869,6 +921,7 @@ export function RepairForm({
   settings: StoreSettings | null;
   currency: string;
   ownerId: string;
+  userProfile: UserProfile | null;
   currentUserLabel: string;
   canCash: boolean;
   canEditProductSellPrice: boolean;
@@ -878,6 +931,7 @@ export function RepairForm({
   onSaved: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const isEdit = !!repair;
   const [clientId, setClientId] = useState(repair?.clientId || '');
   const [clientSearch, setClientSearch] = useState('');
@@ -938,7 +992,18 @@ export function RepairForm({
   ).slice(0, 6);
 
   const partsTotal = parts.reduce((s, p) => s + p.total, 0);
-  const total = (parseFloat(laborCost) || 0) + partsTotal;
+  const financialSettings = isEdit
+    ? {
+      tvaEnabled: repair?.tvaEnabled === true,
+      tva: repair?.tvaEnabled === true ? repair?.tvaRate || 0 : 0,
+      tvaOptIn: repair?.tvaOptIn === true,
+    }
+    : settings;
+  const repairTotals = computeTotals([
+    { total: parseFloat(laborCost) || 0 },
+    ...parts.map(part => ({ total: part.total })),
+  ], 0, financialSettings);
+  const total = repairTotals.total;
   // Sans droit d'encaissement (Technicien), le montant payé reste celui déjà enregistré.
   const paidValue = canCash ? (parseFloat(paid) || 0) : (repair?.paid || 0);
   const debt = Math.max(0, total - paidValue);
@@ -1026,6 +1091,12 @@ export function RepairForm({
       showError("La livraison et l'encaissement sont réservés à l'administrateur ou à la vendeuse.");
       return;
     }
+    if (!isEdit && paidValue > 0 && !cashSession) {
+      showError(cashSessionLoading
+        ? 'Vérification de la caisse en cours…'
+        : 'Aucune caisse ouverte. Ouvrez une session avant d’encaisser cette réparation.');
+      return;
+    }
     if (!deviceBrand.trim()) { showError("Indiquez la marque de l'appareil."); return; }
     if (!deviceModel.trim()) { showError("Indiquez le modèle de l'appareil."); return; }
     setSaving(true);
@@ -1095,6 +1166,11 @@ export function RepairForm({
           total: part.total,
         })),
         total,
+        subtotal: repairTotals.subtotal,
+        tva: repairTotals.tva,
+        tvaEnabled: financialSettings?.tvaEnabled === true,
+        tvaRate: financialSettings?.tvaEnabled === true ? Number(financialSettings.tva) || 0 : 0,
+        tvaOptIn: financialSettings?.tvaEnabled === true,
         paid: paidValue,
         debt,
         warrantyDays: parseInt(warrantyDays) || 0,
@@ -1114,6 +1190,10 @@ export function RepairForm({
           if (!repairSnap.exists()) throw new Error('La réparation n’existe plus.');
           const current = repairSnap.data();
           if ((current.ownerId || ownerId) !== ownerId) throw new Error('Cette réparation appartient à un autre magasin.');
+          const additionalPaid = Math.max(0, (Number(payload.paid) || 0) - (Number(current.paid) || 0));
+          const activeSession = additionalPaid > 0
+            ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+            : null;
           const nextVersion = await applyRepairStockChanges(tx, {
             repairId: repair.id,
             repairNumber: repair.number,
@@ -1124,9 +1204,25 @@ export function RepairForm({
             movementType: 'repair_part_adjustment',
             userLabel: currentUserLabel,
           });
-          tx.update(repairRef, { ...payload, stockVersion: nextVersion });
+          tx.update(repairRef, {
+            ...payload,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
+            stockVersion: nextVersion,
+          });
+          if (activeSession) {
+            addCashSessionTotals(tx, activeSession, {
+              repairsCollected: additionalPaid,
+              repairsCollectedCash: additionalPaid,
+            });
+          }
         });
-        onSaved(`Réparation ${repair.number} mise à jour.`);
+        let message = `Réparation ${repair.number} mise à jour.`;
+        try {
+          await apiFetch(`/financial/repairs/${encodeURIComponent(repair.id)}/costs`, { method: 'POST' });
+        } catch {
+          message += " Attention : le coût d'achat n'a pas pu être figé.";
+        }
+        onSaved(message);
       } else {
         const number = await generateRepairNumber();
         const repairRef = doc(db, 'repairs', newRepairId);
@@ -1135,6 +1231,9 @@ export function RepairForm({
           if (existingRepair.exists()) {
             throw new Error('Cette demande a déjà été enregistrée. Rechargez la liste des réparations.');
           }
+          const activeSession = paidValue > 0
+            ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+            : null;
           const nextVersion = await applyRepairStockChanges(tx, {
             repairId: repairRef.id,
             repairNumber: number,
@@ -1145,8 +1244,25 @@ export function RepairForm({
             movementType: 'repair_part_adjustment',
             userLabel: currentUserLabel,
           });
-          tx.set(repairRef, { ...payload, number, stockVersion: nextVersion, date: serverTimestamp() });
+          tx.set(repairRef, {
+            ...payload,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
+            number,
+            stockVersion: nextVersion,
+            date: serverTimestamp(),
+          });
+          if (activeSession) {
+            addCashSessionTotals(tx, activeSession, {
+              repairsCollected: paidValue,
+              repairsCollectedCash: paidValue,
+            });
+          }
         });
+        try {
+          await apiFetch(`/financial/repairs/${encodeURIComponent(repairRef.id)}/costs`, { method: 'POST' });
+        } catch {
+          showError("Réparation enregistrée, mais le coût d'achat des pièces n'a pas pu être figé.");
+        }
         // Ouvre le bon de dépôt pour impression immédiate (au lieu de fermer directement).
         setPrintingRepair({ ...payload, id: repairRef.id, number, date: { toDate: () => new Date() } } as Repair);
       }
@@ -1158,34 +1274,34 @@ export function RepairForm({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl my-4">
-        <div className="flex items-center justify-between p-5 border-b border-slate-100 sticky top-0 bg-white rounded-t-3xl z-10">
-          <h2 className="text-lg font-black font-display text-slate-900 flex items-center gap-2">
-            <Wrench className="w-5 h-5 text-indigo-600" />
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#0A0A0A]/50 p-2 backdrop-blur-sm sm:items-center sm:p-4">
+      <div className="my-4 w-full max-w-2xl rounded-[24px] border border-[#E2E2DF] bg-white shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between rounded-t-[24px] border-b border-[#E2E2DF] bg-white p-5">
+          <h2 className="flex items-center gap-2 font-display text-lg font-bold text-[#0A0A0A]">
+            <Wrench className="h-5 w-5 text-[#0A0A0A]" />
             {isEdit ? `Modifier ${repair?.number}` : 'Nouvelle réparation'}
           </h2>
-          <button onClick={onClose} className="p-2 hover:bg-slate-50 rounded-xl"><X className="w-5 h-5 text-slate-400" /></button>
+          <button onClick={onClose} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#5C5C5C] hover:bg-[#F4F4F2]"><X className="h-5 w-5" /></button>
         </div>
 
         {localError && (
-          <div className="mx-5 mt-4 flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-sm font-bold">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> {localError}
+          <div className="mx-5 mt-4 flex items-start gap-2 rounded-xl border border-[#F6C9BE] bg-[#FBDDD5] px-4 py-3 text-sm font-bold text-[#8A210A]">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {localError}
           </div>
         )}
 
-        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70vh] space-y-5 overflow-y-auto p-5">
           {/* Client */}
           <section>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Client</label>
+            <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Client</label>
             {selectedClient ? (
-              <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2.5">
+              <div className="flex items-center justify-between rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5">
                 <div className="flex items-center gap-2">
-                  <User className="w-4 h-4 text-indigo-500" />
-                  <span className="font-bold text-sm text-slate-800">{selectedClient.name}</span>
-                  {selectedClient.phone && <span className="text-xs text-slate-500">· {selectedClient.phone}</span>}
+                  <User className="h-4 w-4 text-[#5C5C5C]" />
+                  <span className="text-sm font-bold text-[#0A0A0A]">{selectedClient.name}</span>
+                  {selectedClient.phone && <span className="text-xs text-[#5C5C5C]">· {selectedClient.phone}</span>}
                 </div>
-                <button onClick={() => { setClientId(''); setClientSearch(''); }} className="text-xs font-bold text-rose-500">Retirer</button>
+                <button onClick={() => { setClientId(''); setClientSearch(''); }} className="min-h-11 px-2 text-xs font-bold text-[#8A210A]">Retirer</button>
               </div>
             ) : (
               <div className="relative">
@@ -1193,15 +1309,15 @@ export function RepairForm({
                   value={clientSearch}
                   onChange={(e) => setClientSearch(e.target.value)}
                   placeholder="Rechercher un client (nom, téléphone)"
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                  className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
                 />
                 {clientSearch && filteredClients.length > 0 && (
-                  <div className="absolute z-20 mt-1 w-full bg-white border border-slate-100 rounded-xl shadow-lg overflow-hidden">
+                  <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-[#E2E2DF] bg-white shadow-lg">
                     {filteredClients.map(c => (
                       <button key={c.id} onClick={() => { setClientId(c.id); setClientSearch(''); }}
-                        className="w-full text-left px-4 py-2.5 hover:bg-indigo-50 text-sm border-b border-slate-50 last:border-0">
-                        <span className="font-bold text-slate-800">{c.name}</span>
-                        {c.phone && <span className="text-xs text-slate-400 ml-2">{c.phone}</span>}
+                        className="min-h-11 w-full border-b border-[#E2E2DF] px-4 py-2.5 text-left text-sm last:border-0 hover:bg-[#F4F4F2]">
+                        <span className="font-bold text-[#0A0A0A]">{c.name}</span>
+                        {c.phone && <span className="ml-2 text-xs text-[#5C5C5C]">{c.phone}</span>}
                       </button>
                     ))}
                   </div>
@@ -1211,21 +1327,21 @@ export function RepairForm({
           </section>
 
           {/* Appareil */}
-          <section className="grid grid-cols-2 gap-3">
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Marque</label>
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Marque</label>
               <input list="repair-device-brands" value={deviceBrand} onChange={event => setDeviceBrand(event.target.value)}
                 placeholder="Samsung, Apple"
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
               <datalist id="repair-device-brands">
                 {['Samsung', 'Apple', 'Huawei', 'Xiaomi', 'Oppo', 'Infinix', 'Nokia'].map(brand => <option key={brand} value={brand} />)}
               </datalist>
             </div>
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Modèle</label>
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Modèle</label>
               <input list="repair-device-models" value={deviceModel} onChange={event => setDeviceModel(event.target.value)}
                 placeholder="Galaxy S21, iPhone 12"
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
               <datalist id="repair-device-models">
                 {['Galaxy S21', 'iPhone 12'].map(model => <option key={model} value={model} />)}
               </datalist>
@@ -1239,25 +1355,25 @@ export function RepairForm({
           {/* Panne */}
           <section className="space-y-3">
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Panne signalée *</label>
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Panne signalée *</label>
               <textarea value={problem} onChange={(e) => setProblem(e.target.value)} rows={2}
                 placeholder="Décrivez le problème rapporté par le client"
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" />
+                className="min-h-11 w-full resize-none rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
             </div>
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Diagnostic technicien</label>
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Diagnostic technicien</label>
               <textarea value={diagnostic} onChange={(e) => setDiagnostic(e.target.value)} rows={2}
                 placeholder="Diagnostic après examen"
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none" />
+                className="min-h-11 w-full resize-none rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
             </div>
           </section>
 
-          <section className="grid grid-cols-2 gap-3">
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Technicien assigné" value={technician} onChange={setTechnician} placeholder="Nom du technicien" />
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Statut</label>
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Statut</label>
               <select value={status} onChange={(e) => setStatus(e.target.value as RepairStatus)}
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer">
+                className="min-h-11 w-full cursor-pointer rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm font-semibold outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10">
                 {Object.entries(REPAIR_STATUS_LABELS)
                   .filter(([k]) => canCash || k !== 'livre' || repair?.status === 'livre')
                   .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -1267,27 +1383,27 @@ export function RepairForm({
 
           {/* Pièces utilisées */}
           <section>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block flex items-center gap-1.5">
+            <label className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#5C5C5C]">
               <Package className="w-3.5 h-3.5" /> Pièces utilisées (déduites du stock)
             </label>
             <div className="relative mb-2">
               <input value={partSearch} onChange={(e) => setPartSearch(e.target.value)}
                 placeholder="Ajouter une pièce (nom, référence, code-barres)..."
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
               {partProducts.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full bg-white border border-slate-100 rounded-xl shadow-lg overflow-hidden">
+                <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-[#E2E2DF] bg-white shadow-lg">
                   {partProducts.map(p => {
                     const reserved = parts.find(x => x.productId === p.id)?.quantity || 0;
                     const outOfStock = ((p.stock || 0) + (isEdit ? reserved : 0)) <= reserved;
                     return (
                       <button key={p.id} onClick={() => addPart(p)} disabled={outOfStock}
-                        className={`w-full text-left px-4 py-2.5 text-sm border-b border-slate-50 last:border-0 flex justify-between ${
+                        className={`flex min-h-11 w-full justify-between border-b border-[#E2E2DF] px-4 py-2.5 text-left text-sm last:border-0 ${
                           outOfStock
-                            ? 'bg-rose-50 cursor-not-allowed opacity-70'
-                            : 'hover:bg-indigo-50'
+                            ? 'bg-[#FBDDD5] cursor-not-allowed opacity-70'
+                            : 'hover:bg-[#F4F4F2]'
                         }`}>
-                        <span className={`font-bold ${outOfStock ? 'text-rose-600' : 'text-slate-800'}`}>{p.name}</span>
-                        <span className={`text-xs ${outOfStock ? 'text-rose-500 font-bold' : 'text-slate-400'}`}>
+                        <span className={`font-bold ${outOfStock ? 'text-[#8A210A]' : 'text-[#0A0A0A]'}`}>{p.name}</span>
+                        <span className={`text-xs ${outOfStock ? 'font-bold text-[#8A210A]' : 'text-[#5C5C5C]'}`}>
                           {outOfStock ? 'Stock épuisé' : `Stock ${p.stock}`} · {p.sellPrice.toFixed(3)} {currency}
                         </span>
                       </button>
@@ -1299,18 +1415,18 @@ export function RepairForm({
             {parts.length > 0 && (
               <div className="space-y-2">
                 {parts.map(p => (
-                  <div key={p.productId} className="flex items-center gap-2 bg-slate-50 rounded-xl px-3 py-2">
-                    <span className="flex-1 text-sm font-semibold text-slate-700 truncate">{p.name}</span>
+                  <div key={p.productId} className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl bg-[#F4F4F2] px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[#0A0A0A]">{p.name}</span>
                     <input type="number" value={p.quantity} min={1}
                       onChange={(e) => updatePartQty(p.productId, parseInt(e.target.value) || 0)}
-                      className="w-14 px-2 py-1 bg-white border border-slate-200 rounded-lg text-sm text-center" />
-                    <span className="text-slate-300">×</span>
+                      className="min-h-11 w-14 rounded-lg border border-[#E2E2DF] bg-white px-2 py-1 text-center text-sm" />
+                    <span className="text-[#5C5C5C]">×</span>
                     <input type="number" value={p.unitPrice} step="0.01"
                       onChange={(e) => updatePartPrice(p.productId, parseFloat(e.target.value) || 0)}
                       disabled={p.inventoryCollection === 'parts' ? !canEditPartSellPrice : !canEditProductSellPrice}
-                      className="w-20 px-2 py-1 bg-white border border-slate-200 rounded-lg text-sm text-right" />
-                    <span className="w-20 text-right text-sm font-black text-slate-800">{p.total.toFixed(3)}</span>
-                    <button onClick={() => updatePartQty(p.productId, 0)} className="text-rose-400 hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
+                      className="min-h-11 w-20 rounded-lg border border-[#E2E2DF] bg-white px-2 py-1 text-right text-sm" />
+                    <span className="w-20 text-right text-sm font-black tabular-nums text-[#0A0A0A]">{p.total.toFixed(3)}</span>
+                    <button onClick={() => updatePartQty(p.productId, 0)} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#8A210A] hover:bg-[#FBDDD5]"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 ))}
               </div>
@@ -1318,33 +1434,39 @@ export function RepairForm({
           </section>
 
           {/* Coûts */}
-          <section className="grid grid-cols-2 gap-3 bg-slate-50 rounded-2xl p-4">
+          <section className="grid grid-cols-1 gap-3 rounded-[20px] bg-[#F4F4F2] p-4 sm:grid-cols-2">
             <Field label="Main d'œuvre" value={laborCost} onChange={setLaborCost} type="number" placeholder="0" full disabled={!canEditProductSellPrice} />
             {parts.length > 0 && (
-              <div className="col-span-2 flex items-center justify-between text-sm border-t border-slate-200 pt-3">
-                <span className="text-slate-500 font-semibold">Coût des pièces</span>
-                <span className="font-black text-slate-700">{partsTotal.toFixed(3)} {currency}</span>
+              <div className="col-span-full flex items-center justify-between border-t border-[#E2E2DF] pt-3 text-sm">
+                <span className="font-semibold text-[#5C5C5C]">Coût des pièces</span>
+                <span className="font-black tabular-nums text-[#0A0A0A]">{partsTotal.toFixed(3)} {currency}</span>
               </div>
             )}
-            <div className="col-span-2 flex items-center justify-between border-t border-slate-200 pt-3">
-              <span className="text-slate-800 font-black">TOTAL</span>
-              <span className="font-black text-lg text-indigo-600">{total.toFixed(2)} {currency}</span>
+            <div className="col-span-full flex items-center justify-between border-t border-[#E2E2DF] pt-3">
+              <span className="font-black text-[#0A0A0A]">TOTAL</span>
+              <span className="font-display text-lg font-bold tabular-nums text-[#0A0A0A]">{total.toFixed(3)} {currency}</span>
             </div>
+            {financialSettings?.tvaEnabled === true && (
+              <div className="col-span-full flex items-center justify-between text-xs text-[#5C5C5C]">
+                <span>TVA ({financialSettings.tva || 0}%)</span>
+                <span>{repairTotals.tva.toFixed(3)} {currency}</span>
+              </div>
+            )}
             <Field label="Payé / acompte" value={canCash ? paid : String(paidValue)} onChange={setPaid} type="number" placeholder="0" disabled={!canCash} />
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">Reste dû</label>
-              <div className={cn("px-4 py-2.5 rounded-xl text-sm font-black", debt > 0 ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600")}>
-                {debt.toFixed(2)} {currency}
+              <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Reste dû</label>
+              <div className={cn("min-h-11 rounded-xl px-4 py-2.5 text-sm font-black tabular-nums", debt > 0 ? "bg-[#FBDDD5] text-[#8A210A]" : "bg-[#F4F4F2] text-[#5C5C5C]")}>
+                {debt.toFixed(3)} {currency}
               </div>
             </div>
             <Field label="Garantie (jours)" value={warrantyDays} onChange={setWarrantyDays} type="number" placeholder="30" />
           </section>
         </div>
 
-        <div className="flex gap-3 p-5 border-t border-slate-100 sticky bottom-0 bg-white rounded-b-3xl">
-          <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold text-sm text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors">Annuler</button>
+        <div className="sticky bottom-0 flex gap-3 rounded-b-[24px] border-t border-[#E2E2DF] bg-white p-5">
+          <button onClick={onClose} className="min-h-11 flex-1 rounded-full border border-[#E2E2DF] bg-white py-3 text-sm font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2]">Annuler</button>
           <button onClick={handleSubmit} disabled={saving}
-            className="flex-1 py-3 rounded-xl font-bold text-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-lg shadow-indigo-600/20">
+            className="min-h-11 flex-1 rounded-full bg-[#0A0A0A] py-3 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-50">
             {saving ? 'Enregistrement...' : (isEdit ? 'Enregistrer' : 'Créer la réparation')}
           </button>
         </div>
@@ -1352,24 +1474,24 @@ export function RepairForm({
 
       {/* Confirmation + impression automatique du bon de dépôt après création */}
       {printingRepair && (
-        <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 text-center">
-            <CheckCircle className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
-            <h3 className="text-lg font-black text-slate-900">Réparation créée</h3>
-            <p className="text-sm text-slate-500 mt-1">
-              N° <span className="font-mono font-bold text-indigo-600">{printingRepair.number}</span>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-[#0A0A0A]/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-[24px] border border-[#E2E2DF] bg-white p-6 text-center shadow-2xl">
+            <CheckCircle className="mx-auto mb-3 h-12 w-12 text-[#5C5C5C]" />
+            <h3 className="text-lg font-bold text-[#0A0A0A]">Réparation créée</h3>
+            <p className="mt-1 text-sm text-[#5C5C5C]">
+              N° <span className="font-mono font-bold text-[#0A0A0A]">{printingRepair.number}</span>
             </p>
-            <p className="text-xs text-slate-400 mt-2">Impression du bon de dépôt en cours...</p>
+            <p className="mt-2 text-xs text-[#5C5C5C]">Impression du bon de dépôt en cours...</p>
             <div className="flex gap-2 mt-5">
               <button
                 onClick={() => window.print()}
-                className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition-colors"
+                className="min-h-11 flex-1 rounded-full border border-[#E2E2DF] bg-white py-2.5 text-sm font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2]"
               >
                 Réimprimer
               </button>
               <button
                 onClick={() => onSaved(`Réparation ${printingRepair.number} créée.`)}
-                className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm transition-colors"
+                className="min-h-11 flex-1 rounded-full bg-[#0A0A0A] py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A]"
               >
                 Terminer
               </button>
@@ -1393,9 +1515,9 @@ function Field({ label, value, onChange, placeholder, type = 'text', full = fals
 }) {
   return (
     <div className={full ? 'col-span-2' : ''}>
-      <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 block">{label}</label>
+      <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">{label}</label>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} disabled={disabled}
-        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:opacity-60 disabled:cursor-not-allowed" />
+        className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10 disabled:cursor-not-allowed disabled:opacity-60" />
     </div>
   );
 }
@@ -1404,7 +1526,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', full = fals
 //  DÉTAIL RÉPARATION + suivi + changement rapide de statut
 // ============================================================
 export function RepairDetail({
-  repair, currency, canDelete, canCash, currentUserLabel, settings, ownerId, clients,
+  repair, currency, canDelete, canCash, currentUserLabel, settings, ownerId, clients, userProfile,
   onEdit, onClose, onDelete, onError, onSuccess
 }: {
   repair: Repair;
@@ -1414,6 +1536,7 @@ export function RepairDetail({
   currentUserLabel: string;
   settings: StoreSettings | null;
   ownerId: string;
+  userProfile: UserProfile | null;
   clients: Client[];
   onEdit: () => void;
   onClose: () => void;
@@ -1421,6 +1544,7 @@ export function RepairDetail({
   onError: (m: string) => void;
   onSuccess: (m: string) => void;
 }) {
+  const { session: cashSession, loading: cashSessionLoading } = useCashSession(userProfile);
   const [quickNote, setQuickNote] = useState('');
   const [updating, setUpdating] = useState(false);
   const [showDeliveryCaisse, setShowDeliveryCaisse] = useState(false);
@@ -1493,14 +1617,27 @@ export function RepairDetail({
   const confirmDelivery = async (paidNow: number, discount: number) => {
     setUpdating(true);
     try {
+      if (paidNow > 0 && !cashSession) {
+        throw new Error(cashSessionLoading
+          ? 'Vérification de la caisse en cours…'
+          : 'Aucune caisse ouverte. Ouvrez une session avant d’encaisser cette réparation.');
+      }
       const now = new Date().toISOString();
       const days = repair.warrantyDays || settings?.defaultWarrantyDays || 0;
       let warrantyUntil = repair.warrantyUntil;
       if (days > 0) { const d = new Date(); d.setDate(d.getDate() + days); warrantyUntil = d.toISOString(); }
 
-      const dueAfterDiscount = Math.max(0, Math.round((repair.debt - discount) * 1000) / 1000);
+      const deliveryTotals = computeTotals([
+        { total: Number(repair.laborCost) || 0 },
+        ...(repair.parts || []).map(part => ({ total: Number(part.total) || 0 })),
+      ], discount, {
+        tvaEnabled: repair.tvaEnabled === true,
+        tva: repair.tvaEnabled === true ? repair.tvaRate || 0 : 0,
+      });
+      const actualDiscount = Math.max(0, Math.round((repair.total - deliveryTotals.total) * 1000) / 1000);
+      const dueAfterDiscount = Math.max(0, Math.round((repair.debt - actualDiscount) * 1000) / 1000);
       const restAfterPaidNow = Math.max(0, Math.round((dueAfterDiscount - paidNow) * 1000) / 1000);
-      const newTotal = Math.max(0, Math.round((repair.total - discount) * 1000) / 1000);
+      const newTotal = deliveryTotals.total;
       const newPaid = Math.round((repair.paid + paidNow) * 1000) / 1000;
 
       if (restAfterPaidNow > 0 && !repairClient) {
@@ -1508,22 +1645,47 @@ export function RepairDetail({
       }
 
       let note = `Livré — Encaissé ${paidNow.toFixed(3)} ${currency}`;
-      if (discount > 0) note += `, remise ${discount.toFixed(3)} ${currency}`;
+      if (actualDiscount > 0) note += `, remise ${actualDiscount.toFixed(3)} ${currency}`;
       if (restAfterPaidNow > 0) note += `, ${restAfterPaidNow.toFixed(3)} ${currency} crédités au compte de ${repairClient?.name}`;
 
       const log: RepairLog = { date: now, status: 'livre', note, by: currentUserLabel };
       const logs = [...(repair.logs || []), log];
 
-      if (restAfterPaidNow > 0) {
-        await runTransaction(db, async (tx) => {
-          const clientRef = doc(db, 'clients', repairClient!.id);
-          const clientSnap = await tx.get(clientRef);
-          if (!clientSnap.exists()) throw new Error('Client introuvable');
-          const currentClientDebt = clientSnap.data().debt || 0;
-          tx.update(doc(db, 'repairs', repair.id), {
-            status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-            total: newTotal, paid: newPaid, debt: 0, discount, logs,
-          });
+      await runTransaction(db, async tx => {
+        const repairRef = doc(db, 'repairs', repair.id);
+        const repairSnapshot = await tx.get(repairRef);
+        if (!repairSnapshot.exists()) throw new Error('La réparation n’existe plus.');
+        const currentRepair = repairSnapshot.data();
+        if (currentRepair.status === 'livre' || Number(currentRepair.paid || 0) !== Number(repair.paid || 0)) {
+          throw new Error('La réparation a été modifiée. Rechargez-la avant de la livrer.');
+        }
+        const activeSession = paidNow > 0
+          ? await requireOpenCashSession(tx, userProfile?.uid || auth.currentUser?.uid || '', ownerId)
+          : null;
+        const clientRef = restAfterPaidNow > 0 && repairClient
+          ? doc(db, 'clients', repairClient.id)
+          : null;
+        const clientSnapshot = clientRef ? await tx.get(clientRef) : null;
+        if (clientSnapshot && !clientSnapshot.exists()) throw new Error('Client introuvable.');
+
+        tx.update(repairRef, {
+          status: 'livre',
+          deliveredAt: now,
+          warrantyUntil: warrantyUntil || null,
+          total: newTotal,
+          subtotal: deliveryTotals.subtotal,
+          tva: deliveryTotals.tva,
+          tvaEnabled: repair.tvaEnabled === true,
+          tvaRate: repair.tvaEnabled === true ? repair.tvaRate || 0 : 0,
+          tvaOptIn: repair.tvaEnabled === true,
+          paid: newPaid,
+          debt: 0,
+          discount: actualDiscount,
+          logs,
+          ...(activeSession ? { sessionId: activeSession.id } : {}),
+        });
+        if (clientRef && clientSnapshot) {
+          const currentClientDebt = Number(clientSnapshot.data().debt) || 0;
           tx.update(clientRef, { debt: currentClientDebt + restAfterPaidNow });
           tx.set(doc(collection(db, 'client_debts')), {
             clientId: repairClient!.id,
@@ -1533,14 +1695,16 @@ export function RepairDetail({
             date: serverTimestamp(),
             by: currentUserLabel,
             ownerId,
+            ...(activeSession ? { sessionId: activeSession.id } : {}),
           });
-        });
-      } else {
-        await updateDoc(doc(db, 'repairs', repair.id), {
-          status: 'livre', deliveredAt: now, warrantyUntil: warrantyUntil || null,
-          total: newTotal, paid: newPaid, debt: 0, discount, logs,
-        });
-      }
+        }
+        if (activeSession) {
+          addCashSessionTotals(tx, activeSession, {
+            repairsCollected: paidNow,
+            repairsCollectedCash: paidNow,
+          });
+        }
+      });
 
       setShowDeliveryCaisse(false);
       onSuccess('Réparation livrée et encaissement enregistré.');
@@ -1564,59 +1728,59 @@ export function RepairDetail({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl my-4">
-        <div className="flex items-center justify-between p-5 border-b border-slate-100 sticky top-0 bg-white rounded-t-3xl z-10">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#0A0A0A]/50 p-2 backdrop-blur-sm sm:items-center sm:p-4">
+      <div className="my-4 w-full max-w-2xl rounded-[24px] border border-[#E2E2DF] bg-white shadow-2xl">
+    <div className="sticky top-0 z-10 flex items-center justify-between rounded-t-[24px] border-b border-[#E2E2DF] bg-white p-5">
           <div>
-            <h2 className="text-lg font-black font-display text-indigo-600 font-mono">{repair.number}</h2>
+        <h2 className="font-display font-bold text-[#0A0A0A]">{repair.number}</h2>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className={cn("inline-block px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider border", STATUS_STYLES[repair.status])}>
                 {REPAIR_STATUS_LABELS[repair.status]}
               </span>
               {repair.date?.toDate && (
-                <span className="flex items-center gap-1 text-[10px] font-bold text-slate-400">
-                  <Calendar className="w-3 h-3" /> Créé le {format(repair.date.toDate(), 'dd/MM/yyyy à HH:mm')}
+                <span className="flex items-center gap-1 text-[10px] font-bold text-[#5C5C5C]">
+                  <Calendar className="h-3 w-3" /> Créé le {format(repair.date.toDate(), 'dd/MM/yyyy à HH:mm')}
                 </span>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={onEdit} className="p-2 hover:bg-indigo-50 rounded-xl text-indigo-500" title="Modifier"><Edit3 className="w-4 h-4" /></button>
-            {canDelete && <button onClick={onDelete} className="p-2 hover:bg-rose-50 rounded-xl text-rose-500" title="Supprimer"><Trash2 className="w-4 h-4" /></button>}
-            <button onClick={onClose} className="p-2 hover:bg-slate-50 rounded-xl"><X className="w-5 h-5 text-slate-400" /></button>
+            <button onClick={onEdit} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#0A0A0A] hover:bg-[#F4F4F2]" title="Modifier"><Edit3 className="h-4 w-4" /></button>
+            {canDelete && <button onClick={onDelete} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#8A210A] hover:bg-[#FBDDD5]" title="Supprimer"><Trash2 className="h-4 w-4" /></button>}
+            <button onClick={onClose} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#5C5C5C] hover:bg-[#F4F4F2]"><X className="h-5 w-5" /></button>
           </div>
         </div>
 
         {localError && (
-          <div className="mx-5 mt-4 flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-sm font-bold">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> {localError}
+          <div className="mx-5 mt-4 flex items-start gap-2 rounded-xl border border-[#F6C9BE] bg-[#FBDDD5] px-4 py-3 text-sm font-bold text-[#8A210A]">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {localError}
           </div>
         )}
 
-        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70vh] space-y-5 overflow-y-auto p-5">
           {/* Client + appareil */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <InfoBlock icon={User} label="Client" value={repair.clientName || 'Sans client'} sub={repair.clientPhone} />
             <InfoBlock icon={Smartphone} label="Appareil" value={`${repair.deviceBrand || ''} ${repair.deviceModel || ''}`.trim() || '—'} sub={repair.imei ? `IMEI ${repair.imei}` : undefined} />
           </div>
 
-          <div className="bg-slate-50 rounded-2xl p-4 space-y-2 text-sm">
-            <div><span className="font-black text-slate-400 text-xs uppercase tracking-wider">Panne : </span><span className="text-slate-700 font-medium">{repair.problem}</span></div>
-            {repair.diagnostic && <div><span className="font-black text-slate-400 text-xs uppercase tracking-wider">Diagnostic : </span><span className="text-slate-700 font-medium">{repair.diagnostic}</span></div>}
-            {repair.accessories && <div><span className="font-black text-slate-400 text-xs uppercase tracking-wider">Accessoires : </span><span className="text-slate-700 font-medium">{repair.accessories}</span></div>}
-            {repair.deviceCondition && <div><span className="font-black text-slate-400 text-xs uppercase tracking-wider">État : </span><span className="text-slate-700 font-medium">{repair.deviceCondition}</span></div>}
-            {repair.technician && <div><span className="font-black text-slate-400 text-xs uppercase tracking-wider">Technicien : </span><span className="text-slate-700 font-medium">{repair.technician}</span></div>}
+          <div className="space-y-2 rounded-[20px] bg-[#F4F4F2] p-4 text-sm">
+            <div><span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Panne : </span><span className="font-medium text-[#0A0A0A]">{repair.problem}</span></div>
+            {repair.diagnostic && <div><span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Diagnostic : </span><span className="font-medium text-[#0A0A0A]">{repair.diagnostic}</span></div>}
+            {repair.accessories && <div><span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Accessoires : </span><span className="font-medium text-[#0A0A0A]">{repair.accessories}</span></div>}
+            {repair.deviceCondition && <div><span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">État : </span><span className="font-medium text-[#0A0A0A]">{repair.deviceCondition}</span></div>}
+            {repair.technician && <div><span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Technicien : </span><span className="font-medium text-[#0A0A0A]">{repair.technician}</span></div>}
           </div>
 
           {/* Pièces */}
           {repair.parts?.length > 0 && (
             <div>
-              <p className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Pièces utilisées</p>
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#5C5C5C]"><Package className="h-3.5 w-3.5" /> Pièces utilisées</p>
               <div className="space-y-1">
                 {repair.parts.map((p, i) => (
-                  <div key={i} className="flex justify-between text-sm bg-slate-50 rounded-lg px-3 py-1.5">
-                    <span className="text-slate-700">{p.name} × {p.quantity}</span>
-                    <span className="font-bold text-slate-800">{p.total.toFixed(3)} {currency}</span>
+                  <div key={i} className="flex justify-between rounded-lg border border-[#E2E2DF] bg-white px-3 py-2 text-sm">
+                    <span className="text-[#0A0A0A]">{p.name} × {p.quantity}</span>
+                    <span className="font-bold tabular-nums text-[#0A0A0A]">{p.total.toFixed(3)} {currency}</span>
                   </div>
                 ))}
               </div>
@@ -1624,7 +1788,7 @@ export function RepairDetail({
           )}
 
           {/* Totaux */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <MoneyBlock label="Total" value={repair.total} currency={currency} accent />
             <MoneyBlock label="Payé" value={repair.paid} currency={currency} />
             <MoneyBlock label="Reste dû" value={repair.debt} currency={currency} danger={repair.debt > 0} />
@@ -1632,7 +1796,7 @@ export function RepairDetail({
 
           {repair.warrantyUntil && (
             <div className={cn("flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold",
-              new Date(repair.warrantyUntil) > new Date() ? "bg-teal-50 text-teal-700" : "bg-slate-50 text-slate-400")}>
+              new Date(repair.warrantyUntil) > new Date() ? "bg-[#F4F4F2] text-[#0A0A0A]" : "bg-[#F4F4F2] text-[#5C5C5C]")}>
               <Shield className="w-4 h-4" />
               Garantie jusqu'au {format(new Date(repair.warrantyUntil), 'dd/MM/yyyy')}
               {new Date(repair.warrantyUntil) < new Date() && ' (expirée)'}
@@ -1640,15 +1804,15 @@ export function RepairDetail({
           )}
 
           {/* Changement rapide de statut */}
-          <div className="border-t border-slate-100 pt-4">
-            <p className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2">Changer le statut</p>
+          <div className="border-t border-[#E2E2DF] pt-4">
+            <p className="mb-2 text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Changer le statut</p>
             <div className="flex flex-wrap gap-2 mb-3">
               {(Object.keys(REPAIR_STATUS_LABELS) as RepairStatus[])
                 .filter(s => canCash || s !== 'livre' || repair.status === 'livre')
                 .map(s => (
                 <button key={s} disabled={updating} onClick={() => changeStatus(s)}
-                  className={cn("px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider border transition-all disabled:opacity-50",
-                    s === repair.status ? STATUS_STYLES[s] + " ring-2 ring-offset-1 ring-indigo-300" : "bg-white text-slate-500 border-slate-200 hover:border-indigo-200")}>
+                  className={cn("min-h-11 rounded-full border px-4 py-1.5 text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50",
+                    s === repair.status ? STATUS_STYLES[s] + " ring-2 ring-offset-1 ring-[#0A0A0A]/20" : "bg-white text-[#5C5C5C] border-[#E2E2DF] hover:bg-[#F4F4F2]")}>
                   {REPAIR_STATUS_LABELS[s]}
                 </button>
               ))}
@@ -1656,23 +1820,23 @@ export function RepairDetail({
             <div className="flex gap-2">
               <input value={quickNote} onChange={(e) => setQuickNote(e.target.value)}
                 placeholder="Ajouter une note de suivi (optionnel)..."
-                className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                className="min-h-11 flex-1 rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10" />
               <button onClick={addNote} disabled={updating || !quickNote.trim()}
-                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold disabled:opacity-40">Noter</button>
+                className="min-h-11 rounded-full bg-[#0A0A0A] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#2A2A2A] disabled:opacity-40">Noter</button>
             </div>
           </div>
 
           {/* Historique */}
           {repair.logs?.length > 0 && (
-            <div className="border-t border-slate-100 pt-4">
-              <p className="text-xs font-black uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5"><History className="w-3.5 h-3.5" /> Historique de suivi</p>
+            <div className="border-t border-[#E2E2DF] pt-4">
+              <p className="mb-3 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#5C5C5C]"><History className="h-3.5 w-3.5" /> Historique de suivi</p>
               <div className="space-y-3">
                 {[...repair.logs].reverse().map((log, i) => (
                   <div key={i} className="flex gap-3">
-                    <div className="w-2 h-2 rounded-full bg-indigo-400 mt-1.5 shrink-0" />
+                    <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[#5C5C5C]" />
                     <div className="flex-1 -mt-0.5">
-                      <p className="text-sm text-slate-700 font-medium">{log.note}</p>
-                      <p className="text-[11px] text-slate-400 font-medium">
+                      <p className="text-sm font-medium text-[#0A0A0A]">{log.note}</p>
+                      <p className="text-[11px] font-medium text-[#5C5C5C]">
                         {format(new Date(log.date), 'dd/MM/yyyy HH:mm')}{log.by ? ` · ${log.by}` : ''}
                       </p>
                     </div>
@@ -1682,8 +1846,8 @@ export function RepairDetail({
             </div>
           )}
           {stockMovements.length > 0 && (
-            <div className="border-t border-slate-100 pt-4">
-              <p className="text-xs font-black uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+            <div className="border-t border-[#E2E2DF] pt-4">
+              <p className="mb-3 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#5C5C5C]">
                 <Package className="w-3.5 h-3.5" /> Mouvements de pièces
               </p>
               <div className="space-y-2">
@@ -1694,13 +1858,13 @@ export function RepairDetail({
                   return (
                     <div key={movement.id} className="flex items-start justify-between gap-3 text-sm">
                       <div>
-                        <p className="font-semibold text-slate-700">{movement.productName} · {movement.delta > 0 ? 'Restitution' : 'Sortie'}</p>
-                        <p className="text-[11px] text-slate-400">
+                        <p className="font-semibold text-[#0A0A0A]">{movement.productName} · {movement.delta > 0 ? 'Restitution' : 'Sortie'}</p>
+                        <p className="text-[11px] text-[#5C5C5C]">
                           {date && !Number.isNaN(date.getTime()) ? format(date, 'dd/MM/yyyy HH:mm') : 'Date indisponible'}
                           {movement.userLabel ? ` · ${movement.userLabel}` : ''}
                         </p>
                       </div>
-                      <span className={cn('font-black tabular-nums', movement.delta > 0 ? 'text-emerald-600' : 'text-rose-600')}>
+                      <span className="font-black tabular-nums text-[#0A0A0A]">
                         {movement.delta > 0 ? '+' : ''}{movement.delta}
                       </span>
                     </div>
@@ -1711,11 +1875,11 @@ export function RepairDetail({
           )}
         </div>
 
-        <div className="flex gap-3 p-5 border-t border-slate-100 sticky bottom-0 bg-white rounded-b-3xl">
-          <button onClick={handlePrint} className="flex items-center justify-center gap-2 flex-1 py-3 rounded-xl font-bold text-sm text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors">
+        <div className="sticky bottom-0 flex gap-3 rounded-b-[24px] border-t border-[#E2E2DF] bg-white p-5">
+          <button onClick={handlePrint} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-full border border-[#E2E2DF] bg-white py-3 text-sm font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2]">
             <FileText className="w-4 h-4" /> Imprimer le bon
           </button>
-          <button onClick={onClose} className="flex-1 py-3 rounded-xl font-bold text-sm text-white bg-indigo-600 hover:bg-indigo-700 transition-colors">Fermer</button>
+          <button onClick={onClose} className="min-h-11 flex-1 rounded-full bg-[#0A0A0A] py-3 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A]">Fermer</button>
         </div>
       </div>
 
@@ -1774,13 +1938,13 @@ function DeliveryCaisseModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between p-5 border-b border-slate-100">
-          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-            <DollarSign className="w-5 h-5 text-teal-600" /> Caisse — Livraison
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0A0A0A]/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[24px] border border-[#E2E2DF] bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[#E2E2DF] p-5">
+          <h2 className="flex items-center gap-2 text-lg font-bold text-[#0A0A0A]">
+            <DollarSign className="h-5 w-5 text-[#0A0A0A]" /> Caisse — Livraison
           </h2>
-          <button onClick={onClose} className="p-2 hover:bg-slate-50 rounded-xl"><X className="w-5 h-5 text-slate-400" /></button>
+          <button onClick={onClose} className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-[#5C5C5C] hover:bg-[#F4F4F2]"><X className="h-5 w-5" /></button>
         </div>
 
         <div className="p-5 space-y-4">
@@ -1790,54 +1954,54 @@ function DeliveryCaisseModal({
           </div>
 
           {client ? (
-            <p className="text-xs font-bold text-slate-500">Client : <span className="text-slate-800">{client.name}</span></p>
+            <p className="text-xs font-bold text-[#5C5C5C]">Client : <span className="text-[#0A0A0A]">{client.name}</span></p>
           ) : (
-            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2.5 rounded-xl text-xs font-bold">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="flex items-start gap-2 rounded-xl border border-[#F6C9BE] bg-[#FBDDD5] px-3 py-2.5 text-xs font-bold text-[#8A210A]">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               Aucun client enregistré sur cette fiche — la livraison ne sera possible que si le montant est encaissé en totalité.
             </div>
           )}
 
           <div>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-1.5 block">Remise ({currency})</label>
+            <label className="mb-1.5 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Remise ({currency})</label>
             <input
               type="text" inputMode="decimal" value={discountInput}
               onChange={(e) => { if (/^[\d.,]*$/.test(e.target.value)) setDiscountInput(e.target.value); }}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+              className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm font-bold outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
             />
           </div>
 
           <div>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-400 mb-1.5 block">Montant encaissé maintenant ({currency})</label>
+            <label className="mb-1.5 block text-xs font-black uppercase tracking-wider text-[#5C5C5C]">Montant encaissé maintenant ({currency})</label>
             <input
               type="text" inputMode="decimal" value={paidInput}
               onChange={(e) => { if (/^[\d.,]*$/.test(e.target.value)) setPaidInput(e.target.value); }}
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+              className="min-h-11 w-full rounded-xl border border-[#E2E2DF] bg-[#F4F4F2] px-4 py-2.5 text-sm font-bold outline-none focus:border-[#0A0A0A] focus:ring-2 focus:ring-[#0A0A0A]/10"
             />
           </div>
 
-          <div className="bg-slate-50 rounded-xl p-3 flex items-center justify-between">
-            <span className="text-xs font-black uppercase tracking-wider text-slate-400">
+          <div className="flex items-center justify-between rounded-xl bg-[#F4F4F2] p-3">
+            <span className="text-xs font-black uppercase tracking-wider text-[#5C5C5C]">
               {restDue > 0 ? 'Reste à créditer au client' : 'Reste après cet encaissement'}
             </span>
-            <span className={cn("font-black text-sm", restDue > 0 ? "text-rose-600" : "text-emerald-600")}>{restDue.toFixed(3)} {currency}</span>
+            <span className={cn("text-sm font-bold tabular-nums", restDue > 0 ? "text-[#8A210A]" : "text-[#0A0A0A]")}>{restDue.toFixed(3)} {currency}</span>
           </div>
 
           {formError && (
-            <div className="flex items-start gap-2 bg-rose-50 text-rose-700 text-xs font-bold px-3 py-2.5 rounded-xl">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> {formError}
+            <div className="flex items-start gap-2 rounded-xl bg-[#FBDDD5] px-3 py-2.5 text-xs font-bold text-[#8A210A]">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {formError}
             </div>
           )}
         </div>
 
-        <div className="flex flex-col gap-2 p-5 border-t border-slate-100">
+        <div className="flex flex-col gap-2 border-t border-[#E2E2DF] p-5">
           <button
             onClick={handleLivrer} disabled={updating}
-            className="w-full py-3 rounded-xl font-bold text-sm text-white bg-teal-600 hover:bg-teal-700 transition-colors disabled:opacity-50"
+            className="min-h-11 w-full rounded-full bg-[#0A0A0A] py-3 text-sm font-bold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-50"
           >
             {restDue > 0 ? 'Livrer & Créditer le reste au client' : 'Livrer & Encaisser'}
           </button>
-          <button onClick={onClose} disabled={updating} className="w-full py-2.5 rounded-xl font-bold text-sm text-slate-500 hover:bg-slate-50 transition-colors">
+          <button onClick={onClose} disabled={updating} className="min-h-11 w-full rounded-full border border-[#E2E2DF] py-2.5 text-sm font-bold text-[#0A0A0A] transition-colors hover:bg-[#F4F4F2]">
             Annuler
           </button>
         </div>
@@ -1848,20 +2012,20 @@ function DeliveryCaisseModal({
 
 function InfoBlock({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
   return (
-    <div className="bg-slate-50 rounded-2xl p-4">
-      <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-slate-400 mb-1"><Icon className="w-3.5 h-3.5" /> {label}</div>
-      <p className="font-bold text-slate-800 truncate">{value}</p>
-      {sub && <p className="text-xs text-slate-400 font-medium truncate">{sub}</p>}
+    <div className="rounded-[20px] border border-[#E2E2DF] bg-white p-4">
+      <div className="mb-1 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#5C5C5C]"><Icon className="h-3.5 w-3.5" /> {label}</div>
+      <p className="truncate font-bold text-[#0A0A0A]">{value}</p>
+      {sub && <p className="truncate text-xs font-medium text-[#5C5C5C]">{sub}</p>}
     </div>
   );
 }
 
 function MoneyBlock({ label, value, currency, accent, danger }: { label: string; value: number; currency: string; accent?: boolean; danger?: boolean }) {
   return (
-    <div className={cn("rounded-2xl p-3 text-center", accent ? "bg-indigo-50" : danger ? "bg-rose-50" : "bg-slate-50")}>
-      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
-      <p className={cn("font-black text-sm mt-0.5", accent ? "text-indigo-600" : danger ? "text-rose-600" : "text-slate-700")}>
-        {(value || 0).toFixed(2)} {currency}
+    <div className={cn("rounded-[18px] border border-[#E2E2DF] p-3 text-center", accent ? "bg-[#0A0A0A]" : danger ? "bg-[#FBDDD5]" : "bg-[#F4F4F2]")}>
+      <p className={cn("text-[10px] font-black uppercase tracking-wider", accent ? "text-white/75" : "text-[#5C5C5C]")}>{label}</p>
+      <p className={cn("mt-0.5 font-display text-sm font-bold tabular-nums", accent ? "text-white" : danger ? "text-[#8A210A]" : "text-[#0A0A0A]")}>
+        {(value || 0).toFixed(3)} {currency}
       </p>
     </div>
   );
